@@ -45,7 +45,7 @@ await step('configuração inicial', async () => {
   await page.click('button[type=submit]'); await page.waitForSelector('text=pelo menos 8 caracteres');
   await page.fill('[name=password]', 'tatame2026');
   await page.click('button[type=submit]');
-  await page.waitForSelector('text=Academia Exemplo BJJ');
+  await page.waitForSelector('#main h1:has-text("Academia Exemplo BJJ")');
   await page.waitForSelector('text=Nenhum horário fixo hoje');
   await shot('01-painel-vazio');
   apiCookie = (await ctx.cookies()).map(c => `${c.name}=${c.value}`).join('; ');
@@ -180,7 +180,7 @@ await step('professor sem permissão de admin e logout', async () => {
   await page.fill('[name=email]', 'rafael@exemplo.com'); await page.fill('[name=password]', 'errada123'); await page.click('button[type=submit]');
   await page.waitForSelector('text=E-mail ou senha incorretos');
   await page.fill('[name=password]', 'rafael2026'); await page.click('button[type=submit]');
-  await page.waitForSelector('text=Academia Exemplo BJJ');
+  await page.waitForSelector('#main h1:has-text("Academia Exemplo BJJ")');
   await page.click('.nav a[data-tab=ajustes]'); await page.waitForSelector('text=só o administrador edita');
   assert.equal(await page.locator('#acad').count(), 0);
   assert.ok(await page.locator('[name="branca.degree_months"]').isDisabled());

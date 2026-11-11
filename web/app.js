@@ -93,7 +93,8 @@ function sheet(html, { onClose } = {}) {
   w.addEventListener('click', e => { if (e.target === w) closeSheet(); });
   w._onClose = onClose;
   document.body.appendChild(w);
-  const f = w.querySelector('[autofocus]'); if (f) setTimeout(() => f.focus(), 60);
+  // Só foca o primeiro campo se a pessoa ainda não começou a digitar em outro.
+  const f = w.querySelector('[autofocus]'); if (f) setTimeout(() => { if (!w.contains(document.activeElement)) f.focus(); }, 60);
   return w;
 }
 function closeSheet() { const w = $('#sheet'); if (w) { w.remove(); if (w._onClose) w._onClose(); } }
@@ -164,7 +165,7 @@ const route = () => (location.hash.replace('#', '') || 'painel').split('/');
 // Desktop: sidebar com marca, navegação e conta. Mobile: só a navegação, como barra inferior.
 function renderShell() {
   $('#root').innerHTML = `<div class="shell"><aside class="side">
-      <a class="side-brand" href="#painel">${belt('preta', 4)}<b>Tatame</b></a>
+      <a class="side-brand" href="#painel">${belt('preta', 4)}<span class="grow"><b>Tatame</b><span class="side-acad ellipsis"></span></span></a>
       <nav class="nav" aria-label="Navegação principal">${TABS.map(([k, l, i]) => `<a href="#${k}" data-tab="${k}">${I(i, 20)}<span>${l}</span><em class="nav-count" data-count="${k}"></em></a>`).join('')}</nav>
       <div class="side-foot"><div class="side-date"></div><a class="side-me" href="#ajustes"></a></div>
     </aside><main class="app" id="main" aria-live="polite"></main></div><div id="overlay"></div>`;
@@ -175,6 +176,7 @@ function renderSide(r) {
   const due = S.dashboard.todays.filter(c => !c.lesson).length;
   $('[data-count=alunos]').textContent = S.students.filter(s => s.status === 'ativo').length;
   const dc = $('[data-count=aulas]'); dc.textContent = due || ''; dc.classList.toggle('due', due > 0); dc.title = due ? `${due} chamada${due > 1 ? 's' : ''} pendente${due > 1 ? 's' : ''} hoje` : '';
+  $('.side-acad').textContent = S.settings.academy_name || 'Academia';
   $('.side-date').textContent = `${WDS[pd(S.today).getDay()]} · ${pd(S.today).getDate()} ${MONTHS[pd(S.today).getMonth()]}`;
   $('.side-me').innerHTML = `<span class="avatar">${esc(initials(S.me.name))}</span><span class="grow"><b class="ellipsis">${esc(S.me.name)}</b><small>${S.me.role === 'admin' ? 'Administrador' : 'Professor'}</small></span>`;
 }
