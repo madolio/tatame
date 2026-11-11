@@ -162,7 +162,7 @@ input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; }
 .chart { position: relative; }
 .chart svg { width: 100%; height: auto; display: block; overflow: visible; }
 .chart .grid { stroke: var(--line); stroke-width: 1; }
-.chart .axis { fill: var(--muted); font-size: 11px; font-family: var(--font); }
+.chart .axis { fill: var(--muted); font-size: 12px; font-family: var(--font); font-variant-numeric: tabular-nums; }
 .chart .cross { stroke: var(--line-3); stroke-width: 1; }
 .chart .bar { transition: opacity .15s; }
 .chart-tip { position: absolute; pointer-events: none; background: var(--surface-3); border: 1px solid var(--line-2); color: var(--text-2); font-size: 12px; padding: 6px 9px; border-radius: var(--r-sm); white-space: nowrap; opacity: 0; transition: opacity .12s; z-index: 5; box-shadow: 0 8px 24px rgba(0,0,0,.45); }
