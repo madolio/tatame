@@ -1,0 +1,97 @@
+import assert from 'node:assert';
+import { makeD1 } from './d1shim.mjs';
+const W = (await import('../web/_worker.js')).default;
+const DB = makeD1();
+DB.load(new URL('../db/schema.sql', import.meta.url).pathname); DB.load(new URL('../db/seed_tecnicas.sql', import.meta.url).pathname);
+const env = { DB, ASSETS: { fetch: () => new Response('static') } };
+let cookie = '';
+const call = async (method, path, body, { csrf = true, ck = cookie } = {}) => {
+  const h = { 'content-type': 'application/json' }; if (csrf) h['x-tatame'] = '1'; if (ck) h.cookie = ck;
+  const r = await W.fetch(new Request('https://t.test' + path, { method, headers: h, body: body ? JSON.stringify(body) : undefined }), env);
+  const sc = r.headers.get('set-cookie'); if (sc) cookie = sc.split(';')[0];
+  const ct = r.headers.get('content-type') || '';
+  return { status: r.status, body: ct.includes('json') ? await r.json() : await r.text() };
+};
+const ok = (c, m) => { assert.ok(c, m); console.log('ok ', m); };
+const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date());
+const ago = d => new Date(Date.parse(today) - d * 864e5).toISOString().slice(0, 10);
+
+DB.raw.exec("INSERT INTO settings (key, value) VALUES ('setup_token', 'ABC123')");
+ok((await call('GET', '/api/status')).body.setup_code_required, 'precisa configurar com código');
+ok((await call('POST', '/api/setup', { academy_name: 'Invasor', name: 'Invasor', email: 'x@x.com', password: 'senhaforte1', setup_code: 'errado' })).status === 403, 'sem o código: bloqueado');
+ok((await call('GET', '/api/state')).status === 401, 'sem login: 401');
+ok((await call('POST', '/api/setup', { academy_name: 'X', name: 'Prof', email: 'p@x.com', password: 'curta', setup_code: 'ABC123' })).status === 400, 'senha curta recusada');
+ok((await call('POST', '/api/setup', { academy_name: 'Academia Teste', name: 'Professor', email: 'prof@x.com', password: 'senhaforte1' }, { csrf: false })).status === 403, 'CSRF bloqueado');
+ok((await call('POST', '/api/setup', { academy_name: 'Academia Teste', name: 'Professor', email: 'prof@x.com', password: 'senhaforte1', setup_code: 'abc123' })).status === 201, 'setup cria admin');
+const adminCookie = cookie;
+ok((await call('POST', '/api/setup', { academy_name: 'Outra', name: 'Hacker', email: 'h@x.com', password: 'senhaforte1' })).status === 409, 'setup não roda 2x');
+
+// aluno branca 4 graus, faixa há 13 meses → candidato a azul
+const s1 = (await call('POST', '/api/students', { name: 'Ana Souza', birth_date: '1998-03-02', start_date: ago(400), belt: 'branca', degrees: 4, belt_since: ago(400), degree_since: ago(100) })).body.student;
+ok(s1.metrics.next.kind === 'faixa' && s1.metrics.next.to_belt === 'azul', 'próxima graduação de branca 4 graus adulta = azul');
+const s2 = (await call('POST', '/api/students', { name: 'Pedro Kids', birth_date: ago(365 * 9), start_date: ago(200), belt: 'branca', degrees: 4 })).body.student;
+ok(s2.metrics.next.to_belt === 'cinza', 'criança branca → cinza');
+const s3 = (await call('POST', '/api/students', { name: 'Bruno', birth_date: '2000-01-01', start_date: ago(10), belt: 'azul', degrees: 1, belt_since: ago(200), degree_since: ago(30) })).body.student;
+ok(s3.metrics.next.kind === 'grau' && s3.metrics.next.to_degrees === 2, 'azul 1 grau → 2º grau');
+ok((await call('POST', '/api/students', { name: 'X', start_date: ago(1) })).status === 400, 'nome curto recusado');
+ok((await call('POST', '/api/students', { name: 'Futuro', start_date: ago(-5) })).status === 400, 'data futura recusada');
+
+// turma e chamada
+const cls = (await call('POST', '/api/classes', { name: 'Fundamentos noite', weekday: 1, start_time: '19:00', end_time: '20:30', level: 'todos' })).body;
+ok(cls.id, 'turma criada');
+ok((await call('POST', '/api/classes', { name: 'Ruim', weekday: 1, start_time: '20:00', end_time: '19:00' })).status === 400, 'horário invertido recusado');
+const tech = (await call('GET', '/api/state')).body.techniques;
+const mata = tech.find(t => t.name === 'Mata-leão'), arm = tech.find(t => t.name === 'Armlock da guarda');
+// 130 aulas para Ana na faixa → critério de aulas
+const lessonIds = [];
+for (let i = 0; i < 130; i++) {
+  const r = await call('POST', '/api/lessons', { date: ago(i * 3 + 1), start_time: '19:00', end_time: '20:30', title: 'Aula ' + i, student_ids: i < 60 ? [s1.id, s3.id] : [s1.id], technique_ids: i % 10 === 0 ? [mata.id, arm.id] : [] });
+  if (r.status !== 201) { console.log(r); process.exit(1); }
+  lessonIds.push(r.body.id);
+}
+ok(true, '130 aulas lançadas');
+const dup1 = await call('POST', '/api/lessons', { class_id: cls.id, date: ago(0), student_ids: [s1.id] });
+const dup2 = await call('POST', '/api/lessons', { class_id: cls.id, date: ago(0), student_ids: [s1.id] });
+ok(dup1.status === 201 && dup2.status === 409, 'chamada duplicada da mesma turma no mesmo dia bloqueada');
+let d = (await call('GET', '/api/students/' + s1.id)).body;
+ok(d.student.metrics.classes_total === 131, 'total de aulas = 131');
+ok(d.skills.find(x => x.technique_id === mata.id).level === 1, 'técnica passada em aula vira "vista em aula"');
+ok(d.student.metrics.difficulties.some(x => x.technique_id === mata.id), 'mata-leão visto 13x e nível 1 = dificuldade');
+const crit = Object.fromEntries(d.student.metrics.criteria.map(c => [c.key, c]));
+ok(crit.months.met && crit.classes.met && !crit.curriculum.met && crit.age.met, 'critérios: tempo/aulas/idade ok, currículo não');
+ok(!d.student.metrics.ready, 'ainda não apta');
+// avalia todo o currículo branca com nível 3
+const curr = tech.filter(t => t.min_belt === 'branca');
+d = (await call('PUT', `/api/students/${s1.id}/skills`, { items: curr.map(t => ({ technique_id: t.id, level: 3 })) })).body;
+ok(d.student.metrics.ready, 'depois de avaliar o currículo: apta para azul');
+ok(d.student.metrics.learning.pct === 60 && d.student.metrics.learning.label === 'Avançado', 'aprendizado 60% (nível 3/5)');
+ok(d.student.metrics.experience.label === 'Intermediário', 'experiência: 131 aulas = Intermediário');
+// graduação sem critério exige confirmação
+const g1 = await call('POST', `/api/students/${s3.id}/promote`, { kind: 'grau' });
+ok(g1.status === 409, 'grau sem critérios exige confirmação');
+ok((await call('POST', `/api/students/${s3.id}/promote`, { kind: 'grau', override: true })).body.student.degrees === 2, 'grau forçado aplicado');
+d = (await call('POST', `/api/students/${s1.id}/promote`, { kind: 'faixa', to_belt: 'azul', notes: 'Exame aprovado' })).body;
+ok(d.student.belt === 'azul' && d.student.degrees === 0 && d.promotions[0].criteria_met === 1, 'Ana graduada faixa azul, critérios cumpridos');
+ok(d.student.metrics.classes_since_belt <= 1, 'contagem de aulas na faixa reiniciou');
+ok((await call('POST', `/api/students/${s1.id}/promote`, { kind: 'faixa', to_belt: 'branca', override: true })).status === 400, 'não volta faixa');
+d = (await call('DELETE', '/api/promotions/' + d.promotions[0].id)).body;
+ok(d.student.belt === 'branca' && d.student.degrees === 4, 'desfazer graduação restaura faixa e graus');
+
+// professor (não admin)
+ok((await call('POST', '/api/staff', { name: 'Prof Dois', email: 'p2@x.com', password: 'outrasenha2', role: 'professor' })).status === 201, 'admin cria professor');
+cookie = '';
+ok((await call('POST', '/api/login', { email: 'p2@x.com', password: 'errada000' })).status === 401, 'senha errada 401');
+ok((await call('POST', '/api/login', { email: 'p2@x.com', password: 'outrasenha2' })).status === 200, 'professor entra');
+ok((await call('DELETE', '/api/students/' + s2.id)).status === 403, 'professor não exclui aluno');
+ok((await call('PUT', '/api/rules', { rules: [] })).status === 403, 'professor não altera critérios');
+ok((await call('GET', '/api/state')).body.staff.every(s => !s.email), 'professor não vê e-mails da equipe');
+for (let i = 0; i < 9; i++) await call('POST', '/api/login', { email: 'p2@x.com', password: 'chute' + i });
+ok((await call('POST', '/api/login', { email: 'p2@x.com', password: 'outrasenha2' })).status === 429, 'limite de tentativas');
+await call('POST', '/api/logout'); ok((await call('GET', '/api/state')).status === 401, 'logout encerra sessão');
+cookie = adminCookie;
+const st = (await call('GET', '/api/state')).body;
+ok(st.dashboard.kpis.active_students === 3 && st.dashboard.weekly.length === 12, 'painel calculado');
+ok(st.techniques.find(t => t.id === mata.id).times_taught === 13, 'técnica: vezes ensinada');
+const csv = await call('GET', '/api/export/alunos.csv');
+ok(typeof csv.body === 'string' && csv.body.includes('Ana Souza'), 'exporta CSV');
+console.log('\nTODOS OS TESTES DA API PASSARAM');
