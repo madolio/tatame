@@ -198,17 +198,66 @@ const VIEWS = {};
 // =====================================================================
 // PAINEL
 // =====================================================================
-function stuRow(s, extra = '') {
-  const m = s.metrics;
-  return `<a class="item" href="#aluno/${s.id}"><div class="avatar">${esc(initials(s.name))}</div>
-    <div class="grow"><b class="ellipsis" style="display:block">${esc(s.name)}${s.nickname ? ` <span class="muted small">“${esc(s.nickname)}”</span>` : ''}</b>
-    <div class="stu"><div class="meta">${belt(s.belt, s.degrees)}<span class="muted xs">${extra || `${n1(m.weekly_avg)}/sem · última ${ago(m.last_attendance)}`}</span></div></div></div>
-    <div class="mini-ring ${m.ready ? 'ok' : ''}" style="--p:${m.progress}" title="Progresso para ${nextLabel(m.next)}"><span>${m.ready ? I('check', 14) : m.progress + '%'}</span></div></a>`;
+// ---------- Relógio da academia ----------
+// O servidor define "hoje" no fuso fixo da academia (TZ em _worker.js). A hora atual é lida no mesmo
+// fuso, para o estado das aulas não depender do relógio ou do fuso do aparelho.
+const TZ = 'America/Sao_Paulo';
+const TZ_FMT = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+const hm = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+const dur = m => m < 60 ? `${m} min` : `${Math.floor(m / 60)} h${m % 60 ? ` ${String(m % 60).padStart(2, '0')}` : ''}`;
+function nowMin() {
+  const p = Object.fromEntries(TZ_FMT.formatToParts(new Date()).map(x => [x.type, x.value]));
+  const date = `${p.year}-${p.month}-${p.day}`;
+  // Se a tela ficou aberta além da meia-noite, as aulas do "hoje" carregado já passaram.
+  return date > S.today ? 24 * 60 : date < S.today ? -1 : +p.hour * 60 + +p.minute;
 }
-// Horário do dia: hora em mono à esquerda, turma ao centro e o estado da chamada à direita.
-const slotRow = c => `<div class="item slot ${c.lesson ? 'done' : ''}"><div class="slot-time"><b>${c.start_time}</b><span>${c.end_time}</span></div>
-  <div class="grow"><b>${esc(c.name)}</b><div class="muted small">${LEVEL[c.level]} · ${MOD[c.modality]}</div></div>
-  ${c.lesson ? `<button class="btn ghost sm" data-act="lesson-open" data-id="${c.lesson.id}">${I('check', 14)} ${c.lesson.n} presentes</button>` : `<button class="btn sm" data-act="lesson-new" data-class="${c.id}" data-date="${S.today}">Fazer chamada</button>`}</div>`;
+function classState(c) {
+  const now = nowMin(), s = hm(c.start_time), e = hm(c.end_time);
+  if (c.lesson) return { k: 'done', t: `chamada feita` };
+  if (now < s) return { k: 'next', t: `começa em ${dur(s - now)}` };
+  if (now < e) return { k: 'live', t: 'em andamento' };
+  return { k: 'past', t: `terminou às ${c.end_time} · chamada pendente` };
+}
+const todaysSorted = () => [...S.dashboard.todays].sort((a, b) => a.start_time.localeCompare(b.start_time));
+// Próxima chamada pendente: a aula em andamento; senão a última que terminou sem chamada; senão a próxima do dia.
+function nextPending() {
+  const pend = todaysSorted().filter(c => !c.lesson).map(c => ({ c, k: classState(c).k }));
+  const pick = pend.find(x => x.k === 'live') || pend.filter(x => x.k === 'past').pop() || pend.find(x => x.k === 'next');
+  return pick ? pick.c : null;
+}
+// Nível só aparece quando não repete o nome da turma.
+const classMeta = c => { const prof = c.instructor_id && S.staff.find(x => x.id === c.instructor_id); return [c.name !== LEVEL[c.level] && LEVEL[c.level], MOD[c.modality], prof && esc(prof.name)].filter(Boolean).join(' · '); };
+// Atualiza só os textos de estado a cada 30 s, sem re-renderizar a tela.
+setInterval(() => { if (S.loaded) $$('[data-clock]').forEach(el => { const c = S.dashboard.todays.find(x => x.id === el.dataset.clock); if (c) el.textContent = classState(c).t; }); }, 30000);
+
+// ---------- Progressão da graduação ----------
+// Componente só visual: desenha o que o servidor calculou (degrees, next, progress, ready).
+// As casas da ponteira seguem o mesmo limite que o servidor valida: 6 graus na preta, 4 nas demais.
+const degSlots = b => b === 'preta' ? 6 : 4;
+function rankLabel(s) {
+  const m = s.metrics, n = m.next, st = m.ready ? 'critérios cumpridos' : `${m.progress}% dos critérios`;
+  return `Faixa ${s.belt}, ${s.degrees} de ${degSlots(s.belt)} graus. ${!n ? 'Graduação máxima.' : n.kind === 'grau' ? `Próximo: ${n.to_degrees}º grau, ${st}.` : `Próximo: faixa ${n.to_belt}, ${st}.`}`;
+}
+function rank(s, lg = false) {
+  const m = s.metrics, n = m.next, f = m.ready ? 1 : Math.max(0, Math.min(100, m.progress)) / 100;
+  const slots = [...Array(degSlots(s.belt))].map((_, i) => {
+    const d = i + 1;
+    if (d <= s.degrees) return `<i class="on" data-n="${d}º"></i>`;
+    if (n && n.kind === 'grau' && n.to_degrees === d) return `<i class="pend${m.ready ? ' ready' : ''}" style="--f:${f}" data-n="${d}º"></i>`;
+    return `<i data-n="${d}º"></i>`;
+  }).join('');
+  return `<span class="rank${lg ? ' lg' : ''}" data-b="${s.belt}" role="img" aria-label="${rankLabel(s)}"><span class="rk-belt"><span class="rk-tab">${slots}</span></span>${n && n.kind === 'faixa' ? `<span class="rk-next${m.ready ? ' ready' : ''}" data-b="${n.to_belt}" style="--f:${f}"></span>` : ''}${!n && lg ? '<span class="rk-max">graduação máxima</span>' : ''}</span>`;
+}
+
+function stuRow(s, extra = '') {
+  return `<a class="item" href="#aluno/${s.id}"><div class="avatar">${esc(initials(s.name))}</div>
+    <div class="grow"><b class="sname ellipsis">${esc(s.name)}${s.nickname ? ` <span class="muted small">“${esc(s.nickname)}”</span>` : ''}</b>
+    <div class="stu"><div class="meta">${rank(s)}<span class="muted xs">${extra}</span></div></div></div></a>`;
+}
+// Aula de hoje em linha: hora, turma, estado. Só a próxima chamada pendente recebe o botão sólido.
+const slotRow = (c, primary = false) => `<div class="item slot ${c.lesson ? 'done' : ''}"><div class="slot-time"><b>${c.start_time}</b><span>${c.end_time}</span></div>
+  <div class="grow"><b>${esc(c.name)}</b><div class="muted small">${classMeta(c)}${c.lesson ? '' : ` · <span data-clock="${c.id}">${classState(c).t}</span>`}</div></div>
+  ${c.lesson ? `<button class="btn ghost sm" data-act="lesson-open" data-id="${c.lesson.id}">${I('check', 14)} ${c.lesson.n} presentes</button>` : `<button class="btn ${primary ? '' : 'ghost '}sm" data-act="lesson-new" data-class="${c.id}" data-date="${S.today}">Fazer chamada</button>`}</div>`;
 
 VIEWS.painel = () => {
   const D = S.dashboard, K = D.kpis;
@@ -220,38 +269,48 @@ VIEWS.painel = () => {
   const wds = [1, 2, 3, 4, 5, 6, 0].filter(w => D.heat.some(h => h.weekday === w));
   const maxAvg = Math.max(1, ...D.heat.map(h => h.avg));
   const beltTotal = D.belts.reduce((a, b) => a + b.count, 0);
+  const todays = todaysSorted(), nx = nextPending(), others = todays.filter(c => c !== nx);
+  const occ = nx && D.occupancy.find(o => o.class_id === nx.id);
+  const done = todays.filter(c => c.lesson), presentToday = done.reduce((a, c) => a + c.lesson.n, 0);
+  const hero = !todays.length
+    ? `<section class="today quiet"><div class="today-k">Hoje no tatame</div><div class="row"><p class="grow">Nenhum horário fixo hoje.</p><button class="btn ghost sm" data-act="lesson-new" data-date="${S.today}">${I('plus', 14)} Aula avulsa</button></div></section>`
+    : nx ? `<section class="today" aria-label="Próxima chamada"><div class="today-k">Hoje no tatame · <span data-clock="${nx.id}">${classState(nx).t}</span></div>
+        <div class="today-row"><div class="today-time"><b>${nx.start_time}</b><span>até ${nx.end_time}</span></div>
+          <div class="today-info"><h2>${esc(nx.name)}</h2><div class="muted">${classMeta(nx)}${occ && occ.avg > 0 ? ` · ${n1(occ.avg)} alunos por aula` : ''}</div></div>
+          <button class="btn today-cta" data-act="lesson-new" data-class="${nx.id}" data-date="${S.today}">${I('check', 16)} Fazer chamada</button></div></section>`
+    : `<section class="today quiet"><div class="today-k">Hoje no tatame</div><h2>Chamadas de hoje feitas</h2><p class="muted">${presentToday} presença${presentToday === 1 ? '' : 's'} em ${done.length} aula${done.length === 1 ? '' : 's'}.</p></section>`;
   const html = `
   <div class="top"><div><h1>${esc(S.settings.academy_name || 'Academia')}</h1><div class="sub">${cap(WD[pd(S.today).getDay()])}, ${ld(S.today)}</div></div></div>
-  <div class="kpi-row">
-    <div class="stat"><div class="stat-label">Alunos ativos</div><div class="stat-value">${K.active_students}</div><div class="delta">${K.new_this_month} novo${K.new_this_month === 1 ? '' : 's'} no mês</div></div>
-    <div class="stat"><div class="stat-label">Presenças na semana</div><div class="stat-value">${K.attendance_this_week}</div><div class="delta ${dWeek == null ? '' : dWeek > 0 ? 'up' : dWeek < 0 ? 'down' : ''}">${dWeek == null ? `${K.attendance_last_week} na semana passada` : `${dWeek > 0 ? '+' : ''}${dWeek}% vs mesmo período da semana passada`}</div></div>
-    <div class="stat"><div class="stat-label">Média por aula</div><div class="stat-value">${n1(K.avg_per_lesson_30d)}</div><div class="delta">${K.lessons_30d} aulas em 30 dias</div></div>
-    <a class="stat" href="#alunos" data-act="filter-ready"><div class="stat-label">Aptos a graduar</div><div class="stat-value" style="color:${K.ready ? 'var(--good)' : 'inherit'}">${K.ready}</div><div class="delta">critérios cumpridos ${I('right', 12)}</div></a>
-    <a class="stat" href="#alunos" data-act="filter-risk"><div class="stat-label">Sem treinar 14+ dias</div><div class="stat-value" style="color:${K.at_risk ? 'var(--warn)' : 'inherit'}">${K.at_risk}</div><div class="delta">alunos ativos ${I('right', 12)}</div></a>
-  </div>
+  ${hero}
+  <p class="context">
+    <span><b>${K.active_students}</b> alunos ativos, ${K.new_this_month} novo${K.new_this_month === 1 ? '' : 's'} no mês</span>
+    <span><b>${K.attendance_this_week}</b> presenças na semana, <span class="${dWeek > 0 ? 'up' : dWeek < 0 ? 'down' : ''}">${dWeek == null ? `${K.attendance_last_week} na semana passada` : dWeek === 0 ? 'igual ao mesmo período da semana passada' : `${dWeek > 0 ? '+' : ''}${dWeek}% vs mesmo período da semana passada`}</span></span>
+    <span><b>${n1(K.avg_per_lesson_30d)}</b> alunos por aula em 30 dias, ${K.lessons_30d} aulas</span>
+    <span class="br" aria-hidden="true"></span>
+    <a href="#alunos" data-act="filter-ready"><b${K.ready ? ' class="good"' : ''}>${K.ready}</b> aptos a graduar</a>
+    <a href="#alunos" data-act="filter-risk"><b${K.at_risk ? ' class="warn"' : ''}>${K.at_risk}</b> sem treinar há 14+ dias</a>
+  </p>
   <div class="dash">
     <div class="dash-col">
-      <section style="--o:1"><div class="section-title"><h2>Aulas de hoje</h2><a class="link" href="#aulas">Horários</a></div>
-        ${D.todays.length ? `<div class="list">${D.todays.map(slotRow).join('')}</div>`
-          : `<div class="empty row"><span class="grow">Nenhum horário fixo hoje.</span><button class="btn sm ghost" data-act="lesson-new" data-date="${S.today}">${I('plus', 14)} Aula avulsa</button></div>`}</section>
+      ${others.length ? `<section style="--o:1"><div class="section-title"><h2>${nx ? 'Outras aulas de hoje' : 'Aulas de hoje'}</h2><a class="link" href="#aulas">Horários</a></div><div class="list">${others.map(c => slotRow(c)).join('')}</div></section>` : ''}
       <section style="--o:3"><div class="section-title"><h2>Presenças por semana</h2><span class="muted xs">12 semanas</span></div><div id="ch-week"></div></section>
       <section style="--o:5"><div class="section-title"><h2>Horários mais cheios</h2><span class="muted xs">média de alunos · 8 semanas</span></div>
         ${D.heat.length ? `<div class="heat" style="grid-template-columns:40px repeat(${wds.length},1fr)"><div></div>${wds.map(w => `<div class="h">${WDS[w]}</div>`).join('')}
           ${hours.map(h => `<div class="h">${String(h).padStart(2, '0')}h</div>${wds.map(w => { const c = D.heat.find(x => x.weekday === w && x.hour === h); return c ? `<div class="c" title="${WD[w]} ${h}h: ${n1(c.avg)} alunos em média (${c.lessons} aulas)" style="background:rgba(74,132,245,${(0.1 + 0.7 * c.avg / maxAvg).toFixed(2)})">${n1(c.avg)}</div>` : '<div class="c" style="background:var(--surface-2)"></div>'; }).join('')}`).join('')}</div>`
           : '<div class="chart-empty">Faça chamadas para ver os horários com mais alunos</div>'}</section>
       <section style="--o:6"><div class="section-title"><h2>Técnicas com mais dificuldade</h2><span class="muted xs">menor nível médio</span></div>
-        ${hard.length ? hard.map(t => `<div class="macro"><span class="small">${esc(t.name)}</span><span class="small mono">${n1(t.avg_level)}<span class="muted">/5</span></span><div class="bar thin"><i style="width:${pct(t.avg_level, 5)}%;background:var(--warn)"></i></div></div>`).join('')
+        ${hard.length ? hard.map(t => `<div class="macro"><span class="small">${esc(t.name)}</span><span class="small num">${n1(t.avg_level)}<span class="muted">/5</span></span><div class="bar thin"><i style="width:${pct(t.avg_level, 5)}%;background:var(--warn)"></i></div></div>`).join('')
           : '<div class="chart-empty">Avalie os alunos nas técnicas ensinadas para identificar dificuldades</div>'}</section>
     </div>
     <div class="dash-col">
-      <section style="--o:2"><div class="section-title"><h2>Aptos para graduar</h2><span class="muted xs mono">${ready.length}</span></div>
+      <section style="--o:2"><div class="section-title"><h2>Aptos para graduar</h2><span class="muted xs num">${ready.length}</span></div>
         <div class="list">${ready.map(s => stuRow(s, `pronto para <b style="color:var(--good)">${nextLabel(s.metrics.next)}</b>`)).join('') || '<div class="empty">Ninguém cumpre todos os critérios ainda.</div>'}</div>
-        ${near.length ? `<div class="section-title"><h2>Quase lá</h2><span class="muted xs">75%+ dos critérios</span></div><div class="list">${near.map(s => stuRow(s, `${s.metrics.progress}% para ${nextLabel(s.metrics.next)}`)).join('')}</div>` : ''}
-        <div class="section-title"><h2>Sem treinar há 14+ dias</h2><span class="muted xs mono">${risk.length}</span></div>
+        ${near.length ? `<div class="section-title sub"><h2>Quase lá</h2><span class="muted xs">75%+ dos critérios</span></div><div class="list">${near.map(s => stuRow(s, `${s.metrics.progress}% para ${nextLabel(s.metrics.next)}`)).join('')}</div>` : ''}
+        <div class="section-title sub"><h2>Sem treinar há 14+ dias</h2><span class="muted xs num">${risk.length}</span></div>
         <div class="list">${risk.slice(0, 10).map(s => stuRow(s, `<span style="color:var(--warn)">${s.metrics.last_attendance ? `última aula ${ago(s.metrics.last_attendance)}` : 'ainda não treinou'}</span>`)).join('') || '<div class="empty">Todos os ativos treinaram nas últimas duas semanas.</div>'}</div></section>
       <section style="--o:4"><div class="section-title"><h2>Alunos por faixa</h2><span class="muted xs">ativos</span></div>
         ${D.belts.length ? `<div class="belt-dist" role="img" aria-label="Distribuição de alunos ativos por faixa">${D.belts.map(b => `<i style="flex:${b.count};background:${BELT_HEX[b.belt]}" title="${cap(b.belt)}: ${b.count}"></i>`).join('')}</div>
-          <div class="belt-legend">${D.belts.map(b => `<div class="row">${belt(b.belt)}<span class="grow small">${cap(b.belt)}</span><span class="mono small">${b.count}</span><span class="mono xs muted">${Math.round(pct(b.count, beltTotal))}%</span></div>`).join('')}</div>`
+          <div class="belt-legend">${D.belts.map(b => `<div class="row">${belt(b.belt)}<span class="grow small">${cap(b.belt)}</span><span class="num small">${b.count}</span><span class="num xs muted">${Math.round(pct(b.count, beltTotal))}%</span></div>`).join('')}</div>`
           : '<div class="chart-empty">Cadastre alunos para ver a distribuição</div>'}</section>
     </div>
   </div>`;
@@ -270,11 +329,11 @@ function stuTableRow(s) {
   const m = s.metrics;
   return `<a class="item trow" href="#aluno/${s.id}">
     <span class="t-name"><span class="avatar">${esc(initials(s.name))}</span><span class="grow"><b class="ellipsis">${esc(s.name)}</b>${s.nickname ? `<span class="muted xs ellipsis">“${esc(s.nickname)}”</span>` : ''}</span>${s.status !== 'ativo' ? `<span class="tag">${STATUS[s.status]}</span>` : ''}</span>
-    <span class="t-belt">${belt(s.belt, s.degrees)}<span class="small">${cap(s.belt)}${s.degrees ? ` · ${s.degrees}º` : ''}</span></span>
-    <span class="t-freq"><span class="mono">${n1(m.weekly_avg)}</span><span class="muted xs">/sem</span></span>
+    <span class="t-belt">${rank(s)}<span class="small">${cap(s.belt)}${s.degrees ? ` · ${s.degrees}º` : ''}</span></span>
+    <span class="t-freq"><span class="num">${n1(m.weekly_avg)}</span><span class="muted xs">/sem</span></span>
     <span class="t-last xs" ${m.at_risk ? 'style="color:var(--warn)"' : ''}>${m.last_attendance ? ago(m.last_attendance) : 'ainda não treinou'}</span>
     <span class="t-next">${!m.next ? '<span class="muted xs">graduação máxima</span>' : m.ready ? `<span class="tag good">${I('check', 12)} ${nextLabel(m.next)}</span>`
-      : `<span class="bar thin"><i style="width:${m.progress}%"></i></span><span class="mono xs">${m.progress}%</span><span class="muted xs t-next-l">${nextLabel(m.next)}</span>`}</span></a>`;
+      : `<span class="num small">${m.progress}%</span><span class="muted xs t-next-l">para ${nextLabel(m.next)}</span>`}</span></a>`;
 }
 VIEWS.alunos = () => {
   const f = S.ui.stuFilter, q = S.ui.q.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
@@ -292,7 +351,7 @@ VIEWS.alunos = () => {
   const counts = { todos: S.students.length, ativos: S.students.filter(s => s.status === 'ativo').length, aptos: S.dashboard.ready_list.length, risco: S.dashboard.risk_list.length, inativos: S.students.filter(s => s.status !== 'ativo').length };
   return {
     html: `<div class="top"><div><h1>Alunos</h1><div class="sub">${counts.ativos} ativos · ${counts.todos} cadastrados</div></div>
-      <div class="row"><a class="icon-btn" href="/api/export/alunos.csv" download aria-label="Exportar planilha" title="Exportar CSV">${I('download', 18)}</a><button class="btn sm" data-act="student-new">${I('plus', 15)} Novo aluno</button></div></div>
+      <div class="row"><a class="icon-btn" href="/api/export/alunos.csv" download aria-label="Exportar planilha" title="Exportar CSV">${I('download', 18)}</a><button class="btn ghost sm" data-act="student-new">${I('plus', 15)} Novo aluno</button></div></div>
     <div class="toolbar">
       <div class="chips">${[['ativos', 'Ativos'], ['aptos', 'Aptos a graduar'], ['risco', 'Sem treinar 14+ dias'], ['inativos', 'Trancados/inativos'], ['todos', 'Todos']].map(([k, l]) => `<button class="chip ${f === k ? 'on' : ''}" data-act="stu-filter" data-id="${k}">${l} <span class="muted">${counts[k]}</span></button>`).join('')}</div>
       <div class="toolbar-r"><label class="search">${I('search', 15)}<input class="input" id="stu-q" placeholder="Buscar por nome ou apelido" value="${esc(S.ui.q)}" aria-label="Buscar aluno"></label>
@@ -321,10 +380,10 @@ VIEWS.aluno = id => {
   let body = '';
   if (tab === 'graduacao') {
     const lastP = promotions[0];
-    body = `<div class="card"><div class="row between"><div><div class="muted xs">Próxima graduação</div><h3 style="font-size:18px;margin-top:2px">${nextLabel(m.next)}</h3></div>
+    body = `<div class="card"><div class="row between"><div><div class="muted xs">Próxima graduação</div><h2 style="font-size:18px;margin:2px 0 4px;font-weight:600">${nextLabel(m.next)}</h2></div>
         ${m.next ? `<span class="tag ${m.ready ? 'good' : ''}">${m.ready ? 'Critérios cumpridos' : `${m.progress}% dos critérios`}</span>` : ''}</div>
       ${m.criteria.map(c => `<div class="crit"><span class="small">${c.met ? `<span class="ok">${I('check', 14)}</span>` : `<span class="no">○</span>`} ${c.label}</span>
-        <span class="small mono"><b>${c.key === 'months' ? n1(c.current) : n0(c.current)}</b><span class="muted"> / ${c.key === 'months' ? n1(c.target) : c.target} ${c.unit}</span></span>
+        <span class="small num"><b>${c.key === 'months' ? n1(c.current) : n0(c.current)}</b><span class="muted"> / ${c.key === 'months' ? n1(c.target) : c.target} ${c.unit}</span></span>
         <div class="bar thin"><i style="width:${pct(c.current, c.target || 1)}%;background:${c.met ? 'var(--good)' : 'var(--accent)'}"></i></div></div>`).join('')}
       ${m.criteria.some(c => c.key === 'age') && s.birth_date == null ? '<p class="muted xs">Informe a data de nascimento para conferir a idade mínima.</p>' : ''}
       ${m.next ? `<div class="row" style="margin-top:14px;flex-wrap:wrap">
@@ -357,7 +416,7 @@ VIEWS.aluno = id => {
   } else if (tab === 'presencas') {
     const fav = Object.entries(by_class).sort((a, b) => b[1] - a[1]);
     body = `<div class="card"><div class="row between"><h3>Frequência semanal</h3><span class="muted xs">26 semanas</span></div><div id="ch-stu" style="margin-top:10px"></div></div>
-      ${fav.length ? `<div class="card"><h3>Horários que mais frequenta</h3>${fav.slice(0, 4).map(([k, v]) => `<div class="macro"><span class="small">${esc(k)}</span><span class="small mono">${v}</span><div class="bar thin"><i style="width:${pct(v, fav[0][1])}%"></i></div></div>`).join('')}</div>` : ''}
+      ${fav.length ? `<div class="card"><h3>Horários que mais frequenta</h3>${fav.slice(0, 4).map(([k, v]) => `<div class="macro"><span class="small">${esc(k)}</span><span class="small num">${v}</span><div class="bar thin"><i style="width:${pct(v, fav[0][1])}%"></i></div></div>`).join('')}</div>` : ''}
       <div class="section-title"><h2>Aulas</h2><span class="muted xs">${m.classes_total} no total</span></div>
       <div class="list">${lessons.map(l => `<button class="item" data-act="lesson-open" data-id="${l.id}"><div class="grow"><b class="small">${sd(l.date)} · ${l.start_time}</b><div class="muted xs">${esc(l.class_name || 'Aula avulsa')}${l.title ? ` · ${esc(l.title)}` : ''}</div></div>${I('right', 15)}</button>`).join('') || '<div class="empty">Nenhuma presença registrada.</div>'}</div>`;
   } else {
@@ -368,7 +427,7 @@ VIEWS.aluno = id => {
       ${s.phone ? `<a class="btn ghost sm" href="https://wa.me/${esc(s.phone.replace(/\D/g, '').replace(/^(?!55)/, '55'))}" target="_blank" rel="noopener">${I('phone', 15)} WhatsApp</a>` : ''}</div>
     <div class="hero"><div class="hero-id"><div class="avatar">${esc(initials(s.name))}</div>
       <div class="grow"><h1>${esc(s.name)}</h1><div class="sub">${s.nickname ? `“${esc(s.nickname)}” · ` : ''}${m.age != null ? `${m.age} anos · ` : ''}${STATUS[s.status]}</div></div></div>
-      <div class="hero-belt">${belt(s.belt, s.degrees, true)}<div><b>${beltName(cap(s.belt), s.degrees)}</b><div class="muted xs">há ${months(m.months_in_belt)} · desde ${ld(s.belt_since)}</div></div></div></div>
+      <div class="hero-belt">${rank(s, true)}<div><b>${beltName(cap(s.belt), s.degrees)}</b><div class="muted xs">há ${months(m.months_in_belt)} · desde ${ld(s.belt_since)}</div></div></div></div>
     <div class="stats">
       <div class="stat"><div class="stat-label">Experiência</div><div class="stat-value">${m.experience.label}</div><div class="delta">nível ${m.experience.level}/5 · ${months(m.training_months)} de treino</div></div>
       <div class="stat"><div class="stat-label">Aprendizado</div><div class="stat-value">${m.learning.pct}%<small>${m.learning.label}</small></div><div class="delta">${m.techniques_seen} técnicas vistas em aula</div></div>
@@ -468,30 +527,33 @@ VIEWS.aulas = () => {
     // Agenda: as aulas registradas agrupadas por dia, com a data numa coluna à esquerda.
     const days = [];
     for (const l of lessonsCache || []) { const d = days[days.length - 1]; if (d && d[0] === l.date) d[1].push(l); else days.push([l.date, [l]]); }
-    body = `${todays.length ? `<div class="section-title"><h2>Hoje</h2></div><div class="list">${todays.map(slotRow).join('')}</div>` : ''}
+    body = `${todays.length ? `<div class="section-title"><h2>Hoje</h2></div><div class="list">${todaysSorted().map(c => slotRow(c, c === nextPending())).join('')}</div>` : ''}
       <div class="section-title"><h2>Últimas aulas</h2><span class="muted xs">60 dias</span></div>
       ${!lessonsCache ? '<div class="skeleton"></div>' : lessonsCache.length ? `<div class="agenda">${days.map(([d, arr]) => `<div class="agenda-day"><div class="agenda-date"><b>${pd(d).getDate()}</b><span>${WDS[pd(d).getDay()]}</span><span>${MONTHS[pd(d).getMonth()]}</span></div>
         <div class="list">${arr.map(l => `<button class="item lrow" data-act="lesson-open" data-id="${l.id}"><span class="slot-time"><b>${l.start_time}</b></span>
           <div class="grow"><b class="ellipsis" style="display:block">${esc(l.class_name || 'Aula avulsa')}${l.title ? `<span class="muted"> · ${esc(l.title)}</span>` : ''}</b><div class="muted xs">${l.technique_ids.length} técnica${l.technique_ids.length === 1 ? '' : 's'}${l.instructor_name ? ` · ${esc(l.instructor_name)}` : ''}</div></div>
-          <span class="l-count"><b class="mono">${l.attendees}</b><span class="muted xs">aluno${l.attendees === 1 ? '' : 's'}</span></span></button>`).join('')}</div></div>`).join('')}</div>`
+          <span class="l-count"><b class="num">${l.attendees}</b><span class="muted xs">aluno${l.attendees === 1 ? '' : 's'}</span></span></button>`).join('')}</div></div>`).join('')}</div>`
         : '<div class="card empty"><b>Nenhuma aula registrada</b>Faça a chamada de cada aula: quem veio e quais técnicas foram passadas. Isso alimenta frequência, graduação e aprendizado.</div>'}`;
   } else {
     // Grade semanal: uma coluna por dia no desktop; no mobile, só os dias com aula, empilhados.
+    // Só a aula de hoje em andamento (ou a próxima) ganha destaque, pelo relógio da academia.
     const occ = Object.fromEntries(S.dashboard.occupancy.map(o => [o.class_id, o]));
-    const wdToday = pd(S.today).getDay();
+    const wdToday = pd(S.today).getDay(), now = nowMin();
+    const todayCls = S.classes.filter(c => c.active && c.weekday === wdToday).sort((a, b) => a.start_time.localeCompare(b.start_time));
+    const live = todayCls.find(c => now >= hm(c.start_time) && now < hm(c.end_time)), soon = !live && todayCls.find(c => now < hm(c.start_time));
     body = S.classes.length ? `<div class="week">${[1, 2, 3, 4, 5, 6, 0].map(w => {
       const arr = S.classes.filter(c => c.weekday === w).sort((a, b) => a.start_time.localeCompare(b.start_time));
       return `<div class="wcol ${arr.length ? '' : 'none'} ${w === wdToday ? 'today' : ''}"><div class="wcol-h">${cap(WD[w])}${w === wdToday ? '<span class="tag accent">hoje</span>' : ''}</div>
-        ${arr.map(c => { const prof = c.instructor_id && S.staff.find(x => x.id === c.instructor_id); return `<button class="cls ${c.active ? '' : 'off'}" data-act="class-edit" data-id="${c.id}"><span class="cls-t mono">${c.start_time}–${c.end_time}</span><b>${esc(c.name)}</b>
-          <span class="muted xs">${LEVEL[c.level]} · ${MOD[c.modality]}${prof ? ` · ${esc(prof.name)}` : ''}${c.active ? '' : ' · desativado'}</span>
-          <span class="cls-occ"><b class="mono">${occ[c.id] ? n1(occ[c.id].avg) : '–'}</b> <span class="muted xs">alunos/aula</span></span></button>`; }).join('') || '<span class="wcol-none">Sem aula</span>'}</div>`;
+        ${arr.map(c => { const hl = c === live ? 'agora' : c === soon ? 'próxima' : ''; return `<button class="cls ${c.active ? '' : 'off'} ${hl ? 'now' : ''}" data-act="class-edit" data-id="${c.id}"><span class="cls-t num">${c.start_time}–${c.end_time}${hl ? ` <em>${hl}</em>` : ''}</span><b>${esc(c.name)}</b>
+          <span class="muted xs">${classMeta(c)}${c.active ? '' : ' · desativado'}</span>
+          <span class="cls-occ"><b class="num">${occ[c.id] ? n1(occ[c.id].avg) : '–'}</b> <span class="muted xs">alunos/aula</span></span></button>`; }).join('') || '<span class="wcol-none">Sem aula</span>'}</div>`;
     }).join('')}</div>`
       : '<div class="card empty"><b>Nenhum horário cadastrado</b>Cadastre a grade da academia (dia, horário, nível). A chamada já vem preenchida com a turma certa.</div>';
   }
   return {
     html: `<div class="top"><div><h1>Aulas</h1><div class="sub">Chamada, técnicas passadas e horários</div></div>
-      ${tab === 'chamadas' ? `<button class="btn sm" data-act="lesson-new" data-date="${S.today}">${I('plus', 15)} Nova chamada</button>` : `<button class="btn sm" data-act="class-edit">${I('plus', 15)} Novo horário</button>`}</div>
-    <div class="tabs" role="tablist"><button data-act="aulas-tab" data-id="chamadas" class="${tab === 'chamadas' ? 'on' : ''}" role="tab" aria-selected="${tab === 'chamadas'}">Chamadas</button><button data-act="aulas-tab" data-id="horarios" class="${tab === 'horarios' ? 'on' : ''}" role="tab" aria-selected="${tab === 'horarios'}">Horários <span class="muted mono">${S.classes.length}</span></button></div>
+      ${tab === 'chamadas' ? `<button class="btn ghost sm" data-act="lesson-new" data-date="${S.today}">${I('plus', 15)} Nova chamada</button>` : `<button class="btn ghost sm" data-act="class-edit">${I('plus', 15)} Novo horário</button>`}</div>
+    <div class="tabs" role="tablist"><button data-act="aulas-tab" data-id="chamadas" class="${tab === 'chamadas' ? 'on' : ''}" role="tab" aria-selected="${tab === 'chamadas'}">Chamadas</button><button data-act="aulas-tab" data-id="horarios" class="${tab === 'horarios' ? 'on' : ''}" role="tab" aria-selected="${tab === 'horarios'}">Horários <span class="muted num">${S.classes.length}</span></button></div>
     <div class="tab-body">${body}</div>`
   };
 };
@@ -603,18 +665,18 @@ VIEWS.tecnicas = () => {
   const never = S.techniques.filter(t => t.active && !t.times_taught);
   const dots = d => `<span class="diff" title="Dificuldade ${d}/5">${[1, 2, 3, 4, 5].map(i => `<i class="${i <= d ? 'on' : ''}"></i>`).join('')}</span>`;
   return {
-    html: `<div class="top"><div><h1>Técnicas</h1><div class="sub">${S.techniques.filter(t => t.active).length} no currículo · ${never.length} nunca ensinadas</div></div><button class="btn sm" data-act="tech-edit">${I('plus', 15)} Nova técnica</button></div>
+    html: `<div class="top"><div><h1>Técnicas</h1><div class="sub">${S.techniques.filter(t => t.active).length} no currículo · ${never.length} nunca ensinadas</div></div><button class="btn ghost sm" data-act="tech-edit">${I('plus', 15)} Nova técnica</button></div>
     <div class="lib">
       <div class="chips lib-cats" role="group" aria-label="Categorias"><button class="chip ${!cat ? 'on' : ''}" data-act="tech-cat" data-id="">Todas <span class="muted">${S.techniques.length}</span></button>${CATS.map(c => `<button class="chip ${cat === c ? 'on' : ''}" data-act="tech-cat" data-id="${c}">${c} <span class="muted">${S.techniques.filter(t => t.category === c).length}</span></button>`).join('')}</div>
       <div class="lib-main">
         <div class="toolbar-r lib-tools"><label class="search">${I('search', 15)}<input class="input" id="tech-q" placeholder="Buscar técnica" value="${esc(S.ui.techQ)}" aria-label="Buscar técnica"></label>
           <select class="input" id="tech-st" aria-label="Filtrar por situação">${[['', 'Todas as situações'], ['nunca', 'Nunca ensinadas'], ['avaliadas', 'Com avaliação'], ['off', 'Desativadas']].map(([k, l]) => `<option value="${k}" ${st === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
-        ${ADULT.map(b => { const arr = list.filter(t => t.min_belt === b); return arr.length ? `<div class="section-title"><h2>${belt(b)} Currículo ${b}</h2><span class="muted xs mono">${arr.length}</span></div>
+        ${ADULT.map(b => { const arr = list.filter(t => t.min_belt === b); return arr.length ? `<div class="section-title"><h2>${belt(b)} Currículo ${b}</h2><span class="muted xs num">${arr.length}</span></div>
           <div class="list">${arr.map(t => `<button class="item tlib ${t.active ? '' : 'off'}" data-act="tech-edit" data-id="${t.id}">
             <span class="tl-name"><b>${esc(t.name)}</b><span class="muted xs">${t.category}${t.active ? '' : ' · desativada'}</span></span>
             <span class="tl-diff">${dots(t.difficulty)}</span>
-            <span class="tl-use xs">${t.times_taught ? `<span class="mono">${t.times_taught}×</span> <span class="muted">· última ${sd(t.last_taught)}</span>` : '<span style="color:var(--warn)">nunca ensinada</span>'}</span>
-            <span class="tl-lvl">${t.avg_level != null ? `<span class="bar thin"><i style="width:${pct(t.avg_level, 5)}%"></i></span><span class="mono small">${n1(t.avg_level)}</span>` : '<span class="muted xs">sem avaliação</span>'}</span></button>`).join('')}</div>` : ''; }).join('') || '<div class="empty"><b>Nenhuma técnica encontrada</b>Mude a busca ou os filtros.</div>'}
+            <span class="tl-use xs">${t.times_taught ? `<span class="num">${t.times_taught}×</span> <span class="muted">· última ${sd(t.last_taught)}</span>` : '<span style="color:var(--warn)">nunca ensinada</span>'}</span>
+            <span class="tl-lvl">${t.avg_level != null ? `<span class="bar thin"><i style="width:${pct(t.avg_level, 5)}%"></i></span><span class="num small">${n1(t.avg_level)}</span>` : '<span class="muted xs">sem avaliação</span>'}</span></button>`).join('')}</div>` : ''; }).join('') || '<div class="empty"><b>Nenhuma técnica encontrada</b>Mude a busca ou os filtros.</div>'}
       </div>
     </div>`,
     after() {
