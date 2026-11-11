@@ -162,16 +162,33 @@ function renderLogin(msg = '', setup = false) {
 // =====================================================================
 const TABS = [['painel', 'Painel', 'home'], ['alunos', 'Alunos', 'users'], ['aulas', 'Aulas', 'calendar'], ['tecnicas', 'Técnicas', 'book'], ['ajustes', 'Ajustes', 'gear']];
 const route = () => (location.hash.replace('#', '') || 'painel').split('/');
+// Desktop: sidebar com marca, navegação e conta. Mobile: só a navegação, como barra inferior.
 function renderShell() {
-  $('#root').innerHTML = `<main class="app" id="main" aria-live="polite"></main>
-    <nav class="nav" aria-label="Navegação principal">${TABS.map(([k, l, i]) => `<a href="#${k}" data-tab="${k}">${I(i, 20)}<span>${l}</span></a>`).join('')}</nav><div id="overlay"></div>`;
+  $('#root').innerHTML = `<div class="shell"><aside class="side">
+      <a class="side-brand" href="#painel">${belt('preta', 4)}<b>Tatame</b></a>
+      <nav class="nav" aria-label="Navegação principal">${TABS.map(([k, l, i]) => `<a href="#${k}" data-tab="${k}">${I(i, 20)}<span>${l}</span><em class="nav-count" data-count="${k}"></em></a>`).join('')}</nav>
+      <div class="side-foot"><div class="side-date"></div><a class="side-me" href="#ajustes"></a></div>
+    </aside><main class="app" id="main" aria-live="polite"></main></div><div id="overlay"></div>`;
+}
+let lastRoute = '';
+function renderSide(r) {
+  $$('.nav a').forEach(a => { const on = a.dataset.tab === r || (r === 'aluno' && a.dataset.tab === 'alunos'); a.classList.toggle('on', on); if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
+  const due = S.dashboard.todays.filter(c => !c.lesson).length;
+  $('[data-count=alunos]').textContent = S.students.filter(s => s.status === 'ativo').length;
+  const dc = $('[data-count=aulas]'); dc.textContent = due || ''; dc.classList.toggle('due', due > 0); dc.title = due ? `${due} chamada${due > 1 ? 's' : ''} pendente${due > 1 ? 's' : ''} hoje` : '';
+  $('.side-date').textContent = `${WDS[pd(S.today).getDay()]} · ${pd(S.today).getDate()} ${MONTHS[pd(S.today).getMonth()]}`;
+  $('.side-me').innerHTML = `<span class="avatar">${esc(initials(S.me.name))}</span><span class="grow"><b class="ellipsis">${esc(S.me.name)}</b><small>${S.me.role === 'admin' ? 'Administrador' : 'Professor'}</small></span>`;
 }
 function render() {
   if (!S.loaded) return;
   const [r, id] = route();
-  $$('.nav a').forEach(a => a.classList.toggle('on', a.dataset.tab === r || (r === 'aluno' && a.dataset.tab === 'alunos')));
+  renderSide(r);
   const v = (VIEWS[r] || VIEWS.painel)(id);
   const main = $('#main');
+  // Animação de entrada só ao trocar de tela; filtros e busca re-renderizam sem animar.
+  const key = r + '/' + (id || '');
+  main.classList.remove('enter');
+  if (key !== lastRoute) { lastRoute = key; void main.offsetWidth; main.classList.add('enter'); }
   main.innerHTML = v.html;
   if (v.after) v.after(main);
 }
