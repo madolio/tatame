@@ -20,6 +20,7 @@ Sistema web para o professor acompanhar os alunos: frequência, chamada, técnic
   - Só administrador: excluir aluno, horário e chamadas de outros; corrigir datas de faixa/grau e aulas anteriores ao sistema; catálogo de técnicas; exportar CSV; critérios; nome da academia; equipe.
 - **Força bruta:** 8 tentativas em 15 minutos por par (e-mail, IP) e 30 por IP. O tempo de resposta é o mesmo para e-mail inexistente.
 - **Sessão:** renova sozinha quando faltam menos de 15 dias, até o teto de 90 dias desde o login.
+- **Recuperação de senha:** professor: o administrador troca em Equipe. Administrador: código de uso único (30 min, só o hash no banco) gerado pelo operador com `tools/reset-code.mjs` e informado na tela de login ("Tenho um código de recuperação"). Procedimento em `docs/recuperacao-de-senha.md`.
 - **Primeiro acesso:** protegido por código de ativação, que é apagado depois do uso.
 - **Cabeçalhos:** CSP, X-Frame-Options e nosniff. Toda entrada é validada no servidor.
 
@@ -44,5 +45,6 @@ Sistema web para o professor acompanhar os alunos: frequência, chamada, técnic
 - **Graduação fora dos critérios:** é permitida com confirmação e fica registrada (`criteria_met = 0`).
 
 ## Testes
-- `tests/api_test.mjs`: 41 verificações da API, rodando o Worker real sobre um emulador de D1 (`tests/d1shim.mjs`, node:sqlite).
+- `tests/api_test.mjs`: 82 verificações da API (inclui recuperação de senha), rodando o Worker real sobre um emulador de D1 (`tests/d1shim.mjs`, node:sqlite).
+- `tests/permissions.mjs`: matriz de acesso (toda rota x anônimo, professor, administrador). `tests/migration.mjs`: aplica e reverte a migração 001 num banco no formato anterior.
 - `tests/e2e.mjs`: fluxo completo no navegador (Playwright), com 11 alunos e 12 semanas de aulas simuladas.

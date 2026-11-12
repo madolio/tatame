@@ -7,7 +7,7 @@ Registro para a documentação acadêmica (TCC). Cada item segue: problema, caus
 | Apontamento | Situação em `8bcea11` | Tratado nesta etapa |
 |---|---|---|
 | Professor executa ações administrativas (excluir aula/horário, catálogo de técnicas, CSV, desfazer graduação, corrigir datas de faixa) | Confirmado e reproduzido (teste de matriz: 14 falhas) | Sim (0.1) |
-| Sem recuperação de senha do administrador | Confirmado | Não: exige decisão (código por comando × e-mail com provedor) e migração |
+| Sem recuperação de senha do administrador | Confirmado | Sim (0.2): código gerado por comando, entrega manual |
 | Bloqueio de conta por e-mail a partir de qualquer IP | Confirmado | Sim (0.3) |
 | Enumeração de e-mails pelo tempo de resposta | Confirmado (0,2 ms × 13 ms) | Sim (0.3) |
 | Tentativas de login nunca apagadas | Confirmado (impacto baixo) | Sim (0.3) |
@@ -68,6 +68,17 @@ Não reproduzidos ou parcialmente resolvidos: nenhum. Dependem de ambiente real:
 - **Testes:** 20 dias restantes → sem `set-cookie`; 10 dias → cookie seguro reenviado e `expires_at` ≈ +30 dias; `created_at` há 91 dias → 401 e sessão removida. **Resultado:** 4 verificações novas.
 - **Justificativa:** equilíbrio entre conveniência (uso contínuo não desloga) e limite de exposição de um aparelho perdido (teto absoluto). Os valores 30/15/90 são constantes no topo do Worker e podem ser ajustados. Commit `98854b0`.
 
+## 0.2 — Recuperação de senha do administrador
+
+- **Problema:** o administrador que esquecia a senha ficava sem acesso; só havia reset de professor, feito pelo próprio administrador.
+- **Decisão (alternativa A, com preparação para B):** código gerado localmente, sem provedor de e-mail. Comparação feita antes: A não tem dependência externa nem custo e a raiz de confiança é a verificação humana; B dá autonomia e escala para várias academias, mas exige provedor, domínio verificado, chave secreta e depende da segurança da caixa de e-mail. Hoje há uma academia, então A; a validação ficou separada da entrega para que B troque só o emissor.
+- **Solução:** `tools/reset-code.mjs` consulta a conta via Wrangler, pede que o operador digite o e-mail da conta, gera 130 bits aleatórios (Crockford base32) e grava só `SHA-256(conta + código)` com validade de 30 minutos em `password_resets`. `POST /api/reset` (e-mail, código, nova senha) valida em tempo constante, consome o código de forma atômica (`UPDATE ... WHERE used_at IS NULL`, confere `changes = 1`), troca a senha e apaga todas as sessões da conta. Cinco erros contra o código o invalidam; além disso valem os limites de login por par (e-mail, IP) e por IP. Código errado, e-mail inexistente e conta sem código recebem a mesma resposta; mensagens específicas (expirado, já usado) só aparecem para quem apresentou o código certo, então não permitem enumerar contas. Eventos `reset_issued`, `reset_failed` e `reset_used` vão para `audit_log`, sem código nem senha.
+- **Migração:** `db/migrations/001_recuperacao_senha.sql` cria duas tabelas novas (sem ALTER em tabela existente, por isso é idempotente) e `.down.sql` as remove. Escolhi tabelas novas em vez de colunas em `staff` porque SQLite/D1 não tem `ADD COLUMN IF NOT EXISTS` e a reversão fica trivial. `db/schema.sql` também as inclui para bancos novos.
+- **Interface:** link discreto "Tenho um código de recuperação" no login e tela com e-mail, código, nova senha e confirmação, no mesmo padrão visual. Sem alteração de CSS.
+- **Arquivos:** `web/_worker.js`, `web/app.js`, `tools/reset-code.mjs`, `db/migrations/`, `db/schema.sql`, `tests/api_test.mjs`, `tests/permissions.mjs`, `tests/migration.mjs`, `tests/e2e.mjs`, `docs/recuperacao-de-senha.md`, `README.md`.
+- **Testes:** 29 verificações novas de API (código válido, incorreto, expirado, reutilizado, tentativas excessivas, código de outra conta, sessões antigas encerradas, senha nova funciona e a anterior não, nenhum código nem senha em texto puro no banco ou no console, resposta igual para e-mail inexistente), 8 de migração (aplica, repete, reverte, preserva dados), linha nova na matriz de rotas e um passo de e2e no navegador. O script foi exercitado de ponta a ponta com um SQLite local no lugar do Wrangler (confirmação errada cancela; conta inexistente não gera nada).
+- **Riscos residuais:** engenharia social contra o operador (mitigação: confirmação por segundo canal, documentada); o operador é ponto único de recuperação; um atacante que descubra o e-mail pode gastar as 5 tentativas de um código pendente e obrigar a pedir outro (negação limitada a janelas de 30 minutos); o código passa pelo canal humano em texto claro durante 30 minutos; o fluxo real com o Wrangler contra D1 remoto não foi executado nesta etapa (sem deploy).
+
 ## 0.1 — Matriz de acesso
 
 - **Problema:** professor conseguia excluir chamadas e horários de qualquer pessoa, desfazer qualquer graduação, criar/editar/excluir técnicas do catálogo, corrigir datas de faixa/grau e aulas anteriores ao sistema (que alteram a contagem para graduação) e exportar o CSV com dados de todos os alunos.
@@ -82,14 +93,13 @@ Não reproduzidos ou parcialmente resolvidos: nenhum. Dependem de ambiente real:
 
 ## Pendências da Etapa 0
 
-1. **Recuperação de senha do administrador (0.2):** decisão entre código gerado por comando (sem e-mail) e fluxo por e-mail com provedor externo. Exige migração (colunas `reset_hash`, `reset_expires`).
-2. **Trilha de auditoria (0.7):** tabela `audit_log`; depende do mecanismo de migração.
-3. **Documentação de operação e migrações (0.8):** precisa do id do banco D1 e do nome do projeto Pages.
-4. **Implementação de referência para paridade dos cálculos (P.1):** pré-requisito da Etapa 1.
+1. **Trilha de auditoria (0.7):** a tabela `audit_log` já existe (migração 001) e registra a recuperação de senha; falta registrar as demais ações sensíveis.
+2. **Documentação de operação e migrações (0.8):** precisa do id do banco D1 e do nome do projeto Pages.
+3. **Implementação de referência para paridade dos cálculos (P.1):** pré-requisito da Etapa 1.
 
 ## Como rodar
 
 ```
-npm test            # API (53) + matriz de acesso
+npm test            # API (82) + matriz + migração de acesso
 npm run test:e2e    # navegador; defina TATAME_CHROME=<caminho do chrome.exe> e NODE_PATH com playwright-core, ou instale o pacote playwright
 ```
