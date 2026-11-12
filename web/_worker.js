@@ -9,7 +9,8 @@ const KIDS = ['branca', 'cinza', 'amarela', 'laranja', 'verde'];
 const ADULT = ['branca', 'azul', 'roxa', 'marrom', 'preta'];
 const CATEGORIES = ['Fundamentos', 'Quedas', 'Guarda', 'Raspagens', 'Passagens', 'Controle', 'Costas', 'Finalizações', 'Defesas e saídas'];
 const KID_MIN_AGE = { cinza: 4, amarela: 7, laranja: 10, verde: 13 }; // IBJJF
-const SESSION_DAYS = 30;
+// Sessão: vale 30 dias e renova sozinha quando faltam menos de 15, até o teto de 90 dias desde o login.
+const SESSION_DAYS = 30, SESSION_RENEW_DAYS = 15, SESSION_MAX_DAYS = 90;
 const COOKIE = 'tatame_sid';
 
 // Nível de experiência: aulas registradas + experiência anterior (≈ 8 aulas por mês).
@@ -117,11 +118,23 @@ async function createSession(db, staffId) {
   return sessionCookie(token, SESSION_DAYS * 86400);
 }
 
-async function currentStaff(req, db) {
+// Devolve a pessoa logada e, quando a sessão está perto de vencer, o cookie renovado (ctx.cookie).
+async function currentStaff(req, db, ctx = {}) {
   const token = cookieOf(req, COOKIE);
   if (!token || !/^[0-9a-f]{64}$/.test(token)) return null;
-  return first(db, `SELECT s.id, s.name, s.email, s.role, s.belt FROM auth_sessions a JOIN staff s ON s.id = a.staff_id
-    WHERE a.token_hash = ? AND a.expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now') AND s.active = 1`, await sha256(token));
+  const th = await sha256(token);
+  const row = await first(db, `SELECT s.id, s.name, s.email, s.role, s.belt, a.expires_at, a.created_at FROM auth_sessions a JOIN staff s ON s.id = a.staff_id
+    WHERE a.token_hash = ? AND a.expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now') AND s.active = 1`, th);
+  if (!row) return null;
+  const { expires_at, created_at, ...me } = row;
+  const now = Date.now(), cap = Date.parse(created_at) + SESSION_MAX_DAYS * 864e5;
+  if (now >= cap) { await run(db, 'DELETE FROM auth_sessions WHERE token_hash = ?', th); return null; }
+  if (Date.parse(expires_at) - now < SESSION_RENEW_DAYS * 864e5) {
+    const exp = Math.min(now + SESSION_DAYS * 864e5, cap);
+    await run(db, 'UPDATE auth_sessions SET expires_at = ? WHERE token_hash = ?', new Date(exp).toISOString(), th);
+    ctx.cookie = sessionCookie(token, Math.floor((exp - now) / 1000));
+  }
+  return me;
 }
 
 // Limite de tentativas: por (e-mail, IP) para quem erra a própria senha, e por IP para quem varre vários e-mails.
@@ -486,7 +499,7 @@ async function promote(db, staff, id, b) {
   return pid;
 }
 
-async function route(req, env, url) {
+async function route(req, env, url, ctx) {
   const db = env.DB;
   if (!db) throw new HttpError(500, 'Banco de dados não configurado (binding DB).');
   const method = req.method, path = url.pathname.replace(/\/+$/, '');
@@ -553,7 +566,7 @@ async function route(req, env, url) {
   }
 
   // ---------- daqui em diante: só equipe logada ----------
-  const me = await currentStaff(req, db);
+  const me = await currentStaff(req, db, ctx);
   if (!me) throw new HttpError(401, 'Sessão expirada. Entre novamente.');
   const admin = () => { if (me.role !== 'admin') throw new HttpError(403, 'Apenas o administrador pode fazer isso.'); };
   let m;
@@ -779,7 +792,11 @@ export default {
       return new Response(res.body, { status: res.status, statusText: res.statusText, headers: h });
     }
     try {
-      return await route(req, env, url);
+      const ctx = {};
+      const res = await route(req, env, url, ctx);
+      if (!ctx.cookie || res.headers.has('set-cookie')) return res;
+      const h = new Headers(res.headers); h.append('set-cookie', ctx.cookie);
+      return new Response(res.body, { status: res.status, headers: h });
     } catch (e) {
       if (e instanceof HttpError) return json({ error: e.message }, e.status);
       const msg = String(e && e.message || e);

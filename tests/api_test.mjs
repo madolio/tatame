@@ -24,7 +24,22 @@ ok((await call('GET', '/api/state')).status === 401, 'sem login: 401');
 ok((await call('POST', '/api/setup', { academy_name: 'X', name: 'Prof', email: 'p@x.com', password: 'curta', setup_code: 'ABC123' })).status === 400, 'senha curta recusada');
 ok((await call('POST', '/api/setup', { academy_name: 'Academia Teste', name: 'Professor', email: 'prof@x.com', password: 'senhaforte1' }, { csrf: false })).status === 403, 'CSRF bloqueado');
 ok((await call('POST', '/api/setup', { academy_name: 'Academia Teste', name: 'Professor', email: 'prof@x.com', password: 'senhaforte1', setup_code: 'abc123' })).status === 201, 'setup cria admin');
-const adminCookie = cookie;
+let adminCookie = cookie;
+
+// sessão: renova quando faltam menos de 15 dias; não renova antes; teto de 90 dias desde o login
+const iso = d => new Date(Date.now() + d * 864e5).toISOString();
+const sess = (col, v) => DB.raw.prepare(`UPDATE auth_sessions SET ${col} = ?`).run(v);
+const rawCall = async (p) => W.fetch(new Request('https://t.test' + p, { headers: { cookie: adminCookie } }), env);
+sess('expires_at', iso(20));
+ok(!(await rawCall('/api/me')).headers.get('set-cookie'), 'sessão com 20 dias restantes não é renovada');
+sess('expires_at', iso(10));
+let r = await rawCall('/api/me');
+const exp = DB.raw.prepare('SELECT expires_at e FROM auth_sessions').get().e;
+ok(r.status === 200 && /tatame_sid=[0-9a-f]{64}; Path=\/; HttpOnly; Secure; SameSite=Strict; Max-Age=\d+/.test(r.headers.get('set-cookie')) && exp > iso(29) && exp < iso(31), 'sessão com 10 dias restantes renova por mais 30 e reenvia o cookie seguro');
+sess('created_at', iso(-91));
+ok((await rawCall('/api/me')).status === 401 && DB.raw.prepare('SELECT count(*) n FROM auth_sessions').get().n === 0, 'sessão com mais de 90 dias desde o login é encerrada');
+cookie = ''; ok((await call('POST', '/api/login', { email: 'prof@x.com', password: 'senhaforte1' })).status === 200, 'admin entra de novo');
+adminCookie = cookie;
 ok((await call('POST', '/api/setup', { academy_name: 'Outra', name: 'Hacker', email: 'h@x.com', password: 'senhaforte1' })).status === 409, 'setup não roda 2x');
 
 // aluno branca 4 graus, faixa há 13 meses → candidato a azul
