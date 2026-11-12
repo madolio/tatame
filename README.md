@@ -9,7 +9,7 @@ Sistema web para o professor acompanhar os alunos: frequência, chamada, técnic
 |---|---|---|
 | Interface | HTML, CSS e JavaScript puro (`web/app.js`, `web/charts.js`) | Telas do professor, gráficos SVG próprios, responsivo |
 | API | Cloudflare Pages Functions (`web/_worker.js`) | Autenticação, autorização, validação, regras de negócio e indicadores |
-| Banco | Cloudflare D1 (SQLite) | `db/schema.sql` + `db/seed_tecnicas.sql` (70 técnicas) |
+| Banco | Cloudflare D1 (SQLite) | `db/schema.sql` + `db/seed_tecnicas.sql` (70 técnicas); migrações em `db/migrations/` (reversões em `db/rollbacks/`), operadas por `tools/db.mjs` conforme [docs/operacao-banco.md](docs/operacao-banco.md) |
 
 ## Segurança
 - **Senhas:** PBKDF2-SHA256 com 100 mil iterações e sal aleatório.
@@ -45,7 +45,8 @@ Sistema web para o professor acompanhar os alunos: frequência, chamada, técnic
 - **Graduação fora dos critérios:** é permitida com confirmação e fica registrada (`criteria_met = 0`).
 
 ## Testes
-- `tests/api_test.mjs`: 82 verificações da API (inclui recuperação de senha), rodando o Worker real sobre um emulador de D1 (`tests/d1shim.mjs`, node:sqlite).
+- `tests/api_test.mjs`: 115 verificações da API (inclui recuperação de senha), rodando o Worker real sobre um emulador de D1 (`tests/d1shim.mjs`, node:sqlite).
 - `tests/permissions.mjs`: matriz de acesso (toda rota x anônimo, professor, administrador). `tests/migration.mjs`: aplica e reverte as migrações 001 (recuperação de senha) e 002 (marcador de chamada) num banco no formato anterior.
 - `tests/parity.mjs`: paridade dos cálculos. Compara o Worker, campo a campo, com uma implementação de referência independente (`tests/ref/`), com relógio fixo; divergências conhecidas em `tests/ref/divergencias.json`. Regras em `docs/regras-calculos.md`. `--detalhe` lista cada divergência.
+- `tests/db_guard.mjs`, `tests/schema_check.mjs`, `tests/db_migrate.mjs`, `tests/backup.mjs`: operação do banco (travas contra produção, verificação de schema e linha de base, migrações, backup, anonimização e restauração validada com o Worker real). Procedimento em [docs/operacao-banco.md](docs/operacao-banco.md).
 - `tests/e2e.mjs`: fluxo completo no navegador (Playwright), com 11 alunos e 12 semanas de aulas simuladas.

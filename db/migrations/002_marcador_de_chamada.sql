@@ -2,7 +2,7 @@
 --   roll_called = 1    a chamada foi feita (pode ter zero presentes)
 --   roll_called = 0    aula dada sem chamada
 --   roll_called IS NULL  desconhecido (histórico anterior à migração, sem evidência)
--- Aplicar UMA vez, antes de publicar o Worker que lê a coluna (ALTER TABLE ADD COLUMN não é idempotente no SQLite).
+-- Aplicar somente via `node tools/db.mjs migrate` (docs/operacao-banco.md). UMA vez, antes de publicar o Worker que lê a coluna (ALTER TABLE ADD COLUMN não é idempotente no SQLite).
 -- Reversão: db/rollbacks/002_marcador_de_chamada.down.sql.
 ALTER TABLE lessons ADD COLUMN roll_called INTEGER CHECK (roll_called IN (0, 1));
 

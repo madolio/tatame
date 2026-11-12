@@ -37,18 +37,12 @@ Mensagens possíveis: *código inválido* (também aparece para e-mail errado, d
 - A resposta não revela se o e-mail existe nem se há código pendente.
 - Eventos `reset_issued`, `reset_failed` e `reset_used` ficam em `audit_log`, sem código nem senha. Consulta:
   ```
-  npx wrangler d1 execute NOME_DO_BANCO_D1 --remote --command "SELECT at, event, staff_id, detail FROM audit_log ORDER BY id DESC LIMIT 20"
+  node node_modules/wrangler/bin/wrangler.js d1 execute NOME_DO_BANCO_D1 --remote --command "SELECT at, event, staff_id, detail FROM audit_log ORDER BY id DESC LIMIT 20"
   ```
 
 ## Migração (antes do primeiro deploy desta versão)
 
-A versão nova do Worker precisa das tabelas `password_resets` e `audit_log`. A migração só cria tabelas, não altera nem apaga dados:
-
-```
-npx wrangler d1 execute NOME_DO_BANCO_D1 --remote --file db/migrations/001_recuperacao_senha.sql
-```
-
-Aplique **antes** de publicar o Worker novo. Para reverter: `db/rollbacks/001_recuperacao_senha.down.sql` (apaga só essas duas tabelas). Faça um backup antes (`npx wrangler d1 export NOME_DO_BANCO_D1 --remote --output backup.sql`).
+A versão nova do Worker precisa das tabelas `password_resets` e `audit_log` (migração `001`) e da coluna `lessons.roll_called` (migração `002`). As migrações são aplicadas **somente** pelo procedimento de [docs/operacao-banco.md](operacao-banco.md): backup verificado, linha de base, `node tools/db.mjs migrate`, verificação. Não aplique arquivos de migração à mão com `wrangler d1 execute`. Reversão testada: `db/rollbacks/001_recuperacao_senha.down.sql` (apaga só essas duas tabelas), conforme a seção de incidentes do runbook.
 
 ## Preparado para e-mail no futuro
 
