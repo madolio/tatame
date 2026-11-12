@@ -3,6 +3,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { redact } from '../backup/tempspace.mjs';
 import { schemaRows, fingerprint, fingerprintHash, isInternal, MIGRATIONS_TABLE, integrityLocal } from './schema.mjs';
 
 export const sha256File = f => createHash('sha256').update(readFileSync(f)).digest('hex');
@@ -10,7 +11,7 @@ export const sha256File = f => createHash('sha256').update(readFileSync(f)).dige
 // Abre um .sql num SQLite em memória. Lança erro se o SQL for inválido.
 export function loadSql(text) {
   const db = new DatabaseSync(':memory:', { enableForeignKeyConstraints: false }); // checadas depois por foreign_key_check
-  try { db.exec(text); } catch (e) { db.close(); throw new Error(`O arquivo de backup não é SQL importável: ${e.message}`); }
+  try { db.exec(text); } catch (e) { db.close(); throw new Error(`O arquivo de backup não é SQL importável: ${redact(e.message, 120)} (literais omitidos)`); }
   return db;
 }
 

@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { runWrangler, wranglerVersion } from './wrangler.mjs';
+import { redact } from '../backup/tempspace.mjs';
 
 export const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 export const ENV_FILE = ROOT + 'db/environments.json';
@@ -26,7 +27,8 @@ export const OPS = {
   verify: { offline: true, desc: 'verifica um backup: hash, import em SQLite temporário, integridade, contagens e schema' },
   anonymize: { offline: true, desc: 'gera uma cópia anonimizada de um backup (para staging)' },
   import: { remote: 'write', dest: ['staging', 'restore-test'], desc: 'importa um backup verificado em staging ou restore-test' },
-  'restore-test': { remote: 'write', dest: ['restore-test'], desc: 'importa no restore-test e valida o banco restaurado com o Worker' }
+  'restore-test': { remote: 'write', dest: ['restore-test'], desc: 'importa no restore-test e valida o banco restaurado com o Worker' },
+  'temp-clean': { offline: true, desc: 'lista (ou, com --remove, apaga) áreas temporárias abandonadas por operações interrompidas' }
 };
 const handlers = {};
 export const registerOp = (name, fn) => { handlers[name] = fn; };
@@ -43,7 +45,7 @@ export function parseArgs(argv) {
     const eq = a.indexOf('=');
     const k = (eq > 0 ? a.slice(2, eq) : a.slice(2));
     if (eq > 0) o[k] = a.slice(eq + 1);
-    else if (['dry-run', 'replace'].includes(k)) o[k] = true;
+    else if (['dry-run', 'replace', 'remove'].includes(k)) o[k] = true;
     else o[k] = argv[i + 1] !== undefined && !argv[i + 1].startsWith('--') ? argv[++i] : true;
   }
   return o;
@@ -108,14 +110,15 @@ export async function main(argv, deps) {
       deps.out(`[tatame-db] wrangler ${full.map(a => /\s/.test(a) ? JSON.stringify(a) : a).join(' ')}`);
       if (opts['dry-run']) return { status: 0, stdout: '', stderr: '', dryRun: true };
       const r = deps.exec(full, o);
-      if (r.status !== 0) throw new Error(`wrangler falhou (código ${r.status}): ${(r.stderr || r.stdout || '').slice(0, 800)}`);
+      // a saída do wrangler pode ecoar trechos de SQL com dados: literais são omitidos
+      if (r.status !== 0) throw new Error(`wrangler falhou (código ${r.status}): ${redact(r.stderr || r.stdout || '', 800)}`);
       return r;
     };
     const code = await handler({ op, opts, target, deps, wrangler, version });
     return code ?? 0;
   } catch (e) {
     // Recusas de segurança: travas, chave de backup ausente/incorreta/conteúdo não autêntico, armazenamento inválido.
-    const refused = e instanceof GuardError || e?.name === 'BackupCryptoError' || e?.name === 'StorageError';
+    const refused = e instanceof GuardError || ['BackupCryptoError', 'StorageError', 'TempError'].includes(e?.name);
     deps.err(`[tatame-db] ${refused ? 'RECUSADO' : 'ERRO'}: ${e.message}`);
     return refused ? 3 : 1;
   }

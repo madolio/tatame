@@ -2,7 +2,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "test": "node tests/api_test.mjs && node tests/permissions.mjs && node tests/migration.mjs && node tests/parity.mjs && node tests/db_guard.mjs && node tests/schema_check.mjs && node tests/db_migrate.mjs && node tests/backup.mjs && node tests/backup_crypto.mjs && node tests/anonymize.mjs",
+    "test": "node tests/api_test.mjs && node tests/permissions.mjs && node tests/migration.mjs && node tests/parity.mjs && node tests/db_guard.mjs && node tests/schema_check.mjs && node tests/db_migrate.mjs && node tests/backup.mjs && node tests/backup_crypto.mjs && node tests/backup_temp.mjs && node tests/anonymize.mjs",
     "test:parity": "node tests/parity.mjs",
     "test:e2e": "node tests/e2e.mjs",
     "test:all": "npm test && node tests/e2e.mjs"

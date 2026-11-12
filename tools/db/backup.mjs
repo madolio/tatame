@@ -10,10 +10,9 @@
 // recalculá-lo. Quem prova autenticidade é a tag AES-256-GCM, que cobre conteúdo, manifesto e cabeçalho e só
 // pode ser produzida com a chave. Por isso o conteúdo só é usado depois da autenticação (tools/backup/crypto.mjs).
 //
-// Texto puro existe apenas em uma área de trabalho temporária (permissão 0600), apagada em sucesso e em erro.
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+// Texto puro existe apenas na área temporária de tools/backup/tempspace.mjs (aleatória, 0700/0600, marcada),
+// apagada assim que possível, em sucesso, em erro e em interrupção tratável.
+import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { registerOp, GuardError, ROOT } from './cli.mjs';
@@ -23,10 +22,10 @@ import { encrypt, decrypt, loadKey, assertSameManifest, BackupCryptoError, FORMA
 import { loadSql, analyze, dumpSql } from './dump.mjs';
 import { expectedAfter, fingerprintHash, isInternal } from './schema.mjs';
 import { anonymize, leakReport } from './anonymize.mjs';
+import { workspace, WORK_PREFIX, scanResidue, cleanResidue, redact } from '../backup/tempspace.mjs';
 import { workerCheck } from './worker-check.mjs';
 
 export const MANIFEST_VERSION = 2; // v2: backup em contêiner TATAMEBK v1; estado operacional fora do manifesto
-export const WORK_PREFIX = 'tatame-bkp-work-';
 const sha256 = buf => createHash('sha256').update(buf).digest('hex');
 function gitCommit() {
   try {
@@ -36,15 +35,9 @@ function gitCommit() {
   } catch { return 'desconhecido'; }
 }
 
-// Área de trabalho temporária para texto puro. Sempre usada com try/finally (cleanup).
-export function workspace() {
-  const dir = mkdtempSync(join(tmpdir(), WORK_PREFIX));
-  return {
-    dir,
-    write(name, data) { const f = join(dir, name); writeFileSync(f, data, { mode: 0o600 }); return f; },
-    cleanup() { rmSync(dir, { recursive: true, force: true }); }
-  };
-}
+export { workspace, WORK_PREFIX };
+// Aviso (sem apagar nada) quando há resíduos de operações interrompidas.
+const warnResidue = out => { const a = scanResidue().filter(r => r.status !== 'ativo'); if (a.length) out(`[aviso] ${a.length} área(s) temporária(s) de backup deixada(s) por operação interrompida (podem conter SQL em claro). Rode: node tools/db.mjs temp-clean`); };
 
 // Manifesto a partir do conteúdo REAL (não do que um comando disse ter feito). Sem nenhum valor das linhas.
 export function buildManifest(sqlText, { source_env, source_database, wrangler, anonymized = false, derived_from = null, created_at = new Date().toISOString() }) {
@@ -130,18 +123,19 @@ registerOp('export', async ctx => {
   // Chave e destino são exigidos ANTES de qualquer comando remoto (falha fechada).
   const key = opts['dry-run'] ? null : keyOf(ctx);
   const storage = opts['dry-run'] ? null : createStorage(deps.env || process.env);
+  warnResidue(deps.out);
   const ws = workspace();
   try {
-    const file = join(ws.dir, 'export.sql');
+    const file = ws.path('export');
     const r = ctx.wrangler(['d1', 'export', target.database_name, ...remoteArgs(target), '--output', file, '--skip-confirmation']);
     if (r.dryRun) return 0;
-    const sqlText = readFileSync(file, 'utf8');
+    const sqlText = ws.read(file); ws.discard(file);                 // texto puro sai do disco assim que lido
     // staging só recebe backups anonimizados (checkImportAllowed), então o que sai dele também é anonimizado.
     const manifest = buildManifest(sqlText, { source_env: target.name, source_database: target.database_name, wrangler: ctx.version, anonymized: target.name === 'staging' });
     const v = verifyContent(sqlText, manifest);
     printVerify(deps.out, v);
     if (!v.ok) throw new Error('O export não passou na verificação; nada foi gravado no armazenamento.');
-    const box = ws.write('backup.tbk', sealBackup(sqlText, manifest, key));
+    const box = ws.write('backup', sealBackup(sqlText, manifest, key), 'tbk');
     // prova de que o contêiner gravado abre com a chave antes de considerá-lo um backup
     if (!openVerified(readFileSync(box), key).verification.ok) throw new Error('O contêiner criptografado não reabriu corretamente; nada foi gravado.');
     const id = storage.put(box, manifest);
@@ -168,7 +162,7 @@ registerOp('anonymize', async ctx => {
     const v2 = verifyContent(text, manifest);
     if (!v2.ok) throw new Error('A cópia anonimizada não passou na verificação: ' + v2.problems.join('; '));
     for (const t of Object.keys(manifest.counts)) if (!['auth_sessions', 'login_attempts', 'password_resets', 'settings'].includes(t) && manifest.counts[t] !== o.manifest.counts[t]) throw new Error(`A anonimização mudou a quantidade de linhas de ${t}.`);
-    const box = ws.write('anon.tbk', sealBackup(text, manifest, key));
+    const box = ws.write('anon', sealBackup(text, manifest, key), 'tbk');
     const id = b.storage.put(box, manifest);
     for (const [t, s] of Object.entries(res.summary)) ctx.deps.out(`[anonymize] ${t}: ${s}`);
     ctx.deps.out(`[anonymize] backup pseudonimizado ${id} gravado (criptografado) e verificado; nenhum valor pessoal original encontrado no resultado. Datas e quase-identificadores permanecem: não é anônimo de forma absoluta (docs/operacao-banco.md).`);
@@ -194,9 +188,10 @@ async function importInto(ctx, b) {
   checkImportAllowed(o.manifest, target.name, opts, deps.isTTY(), b.id);
   printVerify(deps.out, o.verification);                    // 2. valida o SQL antes de importar
   if (!o.verification.ok) throw new GuardError('Backup reprovado na verificação; nada foi importado.');
+  warnResidue(deps.out);
   const ws = workspace();
   try {
-    const plainFile = ws.write('import.sql', o.sqlText);     // 3. texto puro só na área temporária
+    const plainFile = ws.write('import', o.sqlText);     // 3. texto puro só na área temporária
     if (ctx.opts['dry-run']) { ctx.wrangler(['d1', 'execute', target.database_name, ...remoteArgs(target), '--file', plainFile, '--yes']); return { dryRun: true }; }
     const src = openSource(ctx);
     const existing = src.query("SELECT type, name FROM sqlite_schema WHERE type IN ('table', 'view', 'trigger') AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY rowid");
@@ -207,7 +202,8 @@ async function importInto(ctx, b) {
       src.exec(drop.join('\n'));
       deps.out(`[import] ${existing.length} objeto(s) removido(s) de ${target.database_name} (--replace).`);
     }
-    ctx.wrangler(['d1', 'execute', target.database_name, ...remoteArgs(target), '--file', plainFile, '--yes']);
+    try { ctx.wrangler(['d1', 'execute', target.database_name, ...remoteArgs(target), '--file', plainFile, '--yes']); }
+    finally { ws.discard(plainFile); }                       // texto puro sai do disco logo após o envio
     const counts = {};
     for (const t of Object.keys(o.manifest.counts)) counts[t] = src.query(`SELECT count(*) n FROM "${t}"`)[0]?.n;
     const diff = Object.keys(o.manifest.counts).filter(t => counts[t] !== o.manifest.counts[t]);
@@ -226,16 +222,16 @@ registerOp('restore-test', async ctx => {
   try { res = await importInto(ctx, b); }
   catch (e) {
     // Recusas (GuardError, inclusive autenticação) não começaram a restauração; falhas depois de começar ficam registradas.
-    if (!(e instanceof GuardError)) record({ at: new Date().toISOString(), database: ctx.target.database_name, ok: false, erro: e.message.slice(0, 200) });
+    if (!(e instanceof GuardError)) record({ at: new Date().toISOString(), database: ctx.target.database_name, ok: false, erro: redact(e.message, 200) });
     throw e;
   }
   if (res.dryRun) return 0;
   const ws = workspace();
   try {
     // Reexporta o que ficou no banco restaurado e compara com o backup original (ida e volta).
-    const file = join(ws.dir, 'roundtrip.sql');
+    const file = ws.path('roundtrip');
     ctx.wrangler(['d1', 'export', ctx.target.database_name, ...remoteArgs(ctx.target), '--output', file, '--skip-confirmation']);
-    const text = readFileSync(file, 'utf8');
+    const text = ws.read(file); ws.discard(file);
     const db = loadSql(text);
     let a; try { a = analyze(db); } finally { db.close(); }
     const problems = [];
@@ -262,4 +258,14 @@ export async function restoreLocal(boxBuffer, key, externalManifest = null) {
   const w = await workerCheck(o.sqlText);
   return { ok: w.ok, authenticated: true, problems: w.problems, notes: w.notes, stats: w.stats };
 }
+// Resíduos de operações interrompidas (kill -9, queda de energia). Sem --remove só lista; com --remove apaga apenas
+// áreas comprovadamente do Tatame, deste computador, de processo morto e só com arquivos esperados.
+registerOp('temp-clean', async ctx => {
+  const rep = ctx.opts.remove ? cleanResidue() : { removed: [], kept: scanResidue() };
+  for (const r of rep.removed) ctx.deps.out(`[temp-clean] removida: ${r.name} (${r.files} arquivo(s), iniciada em ${r.started_at})`);
+  for (const r of rep.kept) ctx.deps.out(`[temp-clean] ${ctx.opts.remove ? 'mantida' : r.status}: ${r.name} (${r.reason})`);
+  const pend = rep.kept.filter(r => r.status === 'abandonado').length;
+  ctx.deps.out(rep.removed.length + rep.kept.length === 0 ? '[temp-clean] nenhum resíduo encontrado.' : ctx.opts.remove ? `[temp-clean] ${rep.removed.length} removida(s); ${rep.kept.length} mantida(s).` : `[temp-clean] ${pend} abandonada(s) podem ser removidas com --remove; as demais exigem conferência manual (docs/operacao-banco.md, 7.6).`);
+  return 0;
+});
 export { isInternal, rowsFromWranglerJson };
