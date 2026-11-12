@@ -21,6 +21,7 @@ desenvolvimento: siga os passos na ordem e não pule as verificações.
 | `tools/db.mjs` | Wrapper de todas as operações (abaixo). |
 | `tools/db-baseline.mjs` | Relatório offline da linha de base a partir de um arquivo JSON. |
 | `tools/backup/storage.mjs` | Armazenamento dos backups (hoje: diretório local `TATAME_BACKUP_DIR`). |
+| `tools/backup/crypto.mjs` | Contêiner criptografado `TATAMEBK` (AES-256-GCM, manifesto autenticado). |
 
 A garantia de que `000 + 001 + 002 = db/schema.sql` é testada em `npm test` (`tests/migration.mjs`, `tests/schema_check.mjs`).
 
@@ -40,7 +41,8 @@ painel deixam de valer. Por isso:
 3. Login na Cloudflare com o wrangler fixado: `node node_modules/wrangler/bin/wrangler.js login`. Use uma conta com o
    mínimo de permissões (D1 e Pages). **Nunca** cole tokens em arquivos do projeto, em chats ou em mensagens.
 4. Para backups: um diretório **fora do repositório e fora do OneDrive**, de preferência num disco cifrado
-   (BitLocker), e a variável `TATAME_BACKUP_DIR` apontando para ele (seção 7).
+   (BitLocker), e a variável `TATAME_BACKUP_DIR` apontando para ele, mais a chave de backup em
+   `TATAME_BACKUP_KEY_FILE` (seção 7.0).
 
 ## 3. Ambientes e travas
 
@@ -85,7 +87,7 @@ node tools/db.mjs <operação> --env <ambiente> [opções]
 | `timetravel-info` | leitura | Mostra o bookmark atual do Time Travel. |
 | `export` | leitura | Exporta o banco para o armazenamento de backups, com manifesto, e verifica o arquivo. |
 | `verify` | offline | Verifica um backup (seção 7.2). |
-| `anonymize` | offline | Gera cópia anonimizada de um backup verificado. |
+| `anonymize` | offline | Gera cópia pseudonimizada (criptografada) de um backup verificado. |
 | `import` | escrita | Importa um backup verificado em `staging` ou `restore-test`. |
 | `restore-test` | escrita | Importa no `restore-test`, reexporta, compara e valida com o Worker real. |
 
@@ -142,52 +144,104 @@ registro, o `migrate` para com "coluna adicional: lessons.roll_called" e **não*
 
 ## 7. Backup
 
+### 7.0 Criptografia e chave (obrigatórias)
+Todo backup é gravado **criptografado** num contêiner próprio, `backup.tbk` (formato `TATAMEBK` versão 1):
+- **Algoritmo:** AES-256-GCM do `node:crypto` (criptografia autenticada; nada de criptografia própria).
+- **IV/nonce:** 96 bits aleatórios, novos a cada gravação.
+- **Tag:** 128 bits, conferida **antes** de qualquer uso do conteúdo.
+- **O que a tag cobre:** o cabeçalho e o **manifesto** entram como dados autenticados. O manifesto é legível sem a chave (para listar backups), mas qualquer alteração nele, no IV, no cabeçalho ou no conteúdo faz a abertura falhar.
+- **Id da chave:** o cabeçalho traz os primeiros 8 bytes de um SHA-256 da chave. Isso não revela a chave e permite dizer "chave errada" em vez de "arquivo alterado".
+- **`manifest.json` ao lado do `.tbk`:** é só uma cópia para listagem. Na abertura, ela é comparada com o manifesto autenticado, e se diferir a operação é recusada.
+- **Estado operacional:** o resultado do restore-test vai para `status.json`, fora do manifesto.
+
+**O que cada mecanismo prova:**
+
+| Situação | Como é detectada |
+|---|---|
+| Arquivo truncado, cabeçalho corrompido, sem assinatura | erro de formato ("truncado ou corrompido") |
+| Chave diferente da usada no backup | "Chave incorreta" (id da chave não confere) |
+| Qualquer byte alterado no conteúdo, IV, tag, cabeçalho ou manifesto embutido | "Autenticação falhou" |
+| `manifest.json` externo editado | "manifest.json externo difere do manifesto autenticado" |
+| Backup **e** manifesto trocados juntos por quem não tem a chave | "Chave incorreta" ou "Autenticação falhou": não é possível gerar uma tag válida sem a chave |
+| Conteúdo autêntico, mas com defeito (ex.: export malfeito) | verificação SQL: SHA-256, import, `integrity_check`, `foreign_key_check`, contagens, schema |
+
+O SHA-256 dentro do manifesto só detecta corrupção **acidental**, porque qualquer um pode recalculá-lo. Quem prova autenticidade é a tag GCM, que só pode ser produzida com a chave. A tag não distingue corrupção acidental de adulteração proposital (as duas aparecem como "Autenticação falhou"). Nos dois casos o backup é recusado inteiro.
+
+**Chave.** São 32 bytes aleatórios, fornecidos de fora:
+- `TATAME_BACKUP_KEY_FILE=<caminho absoluto>` (preferível): um arquivo com a chave em 64 caracteres hexadecimais;
+- ou `TATAME_BACKUP_KEY` (64 hex ou base64).
+
+Sem chave válida, **nenhum** backup é criado nem aberto, e o export é recusado antes de tocar no banco. A chave nunca vai para o Git, para o manifesto, para logs ou para mensagens.
+
+Para gerar uma chave direto num arquivo, **fora do repositório e do OneDrive**, sem exibi-la na tela (ajuste o caminho; o comando se recusa a sobrescrever um arquivo existente):
+```
+node -e "require('fs').writeFileSync(process.argv[1], require('crypto').randomBytes(32).toString('hex'), { mode: 0o600, flag: 'wx' })" D:\chaves\tatame-backup.key
+set TATAME_BACKUP_KEY_FILE=D:\chaves\tatame-backup.key
+```
+Guarde uma cópia da chave **separada dos backups** (por exemplo num gerenciador de senhas). **Sem a chave, os backups são irrecuperáveis.** Quem tiver a chave e um backup integral tem acesso aos dados pessoais.
+
+Para trocar a chave: gere uma nova, faça um export novo e mantenha a antiga até todos os backups dela saírem da retenção. Hoje não existe recriptografia automática.
+
+**Formato e versões.** O manifesto v2 corresponde ao contêiner `TATAMEBK` v1. O formato anterior (`backup.sql` em claro + manifesto v1, da Etapa 5) não é aceito. Nunca houve backup real naquele formato, então não existe migração a fazer. Um formato futuro deve incrementar a versão no cabeçalho, e a leitura recusa versões desconhecidas.
+
+**Texto puro.** O SQL em claro só existe numa área temporária do sistema (`tatame-bkp-work-*`, permissão 0600), criada para cada operação e apagada no fim, tanto em sucesso quanto em erro. O teste confere que nenhuma sobra. Uma queda abrupta do processo (energia, kill) pode deixar uma dessas pastas: apague-as manualmente no temporário do sistema.
+
 ### 7.1 Exportar
 ```
 set TATAME_BACKUP_DIR=D:\backups-tatame        (Windows; caminho de exemplo)
+set TATAME_BACKUP_KEY_FILE=D:\chaves\tatame-backup.key
 node tools/db.mjs export --env production --confirm-production=<NOME>
 ```
-- Sem `TATAME_BACKUP_DIR`, ou com diretório dentro do repositório, no OneDrive, inexistente ou sem escrita, a operação
-  é recusada **antes** de tocar no banco.
-- O arquivo é baixado para uma pasta temporária, verificado (7.2) e só então gravado em
-  `TATAME_BACKUP_DIR/<ambiente>-<data UTC>/backup.sql` com `manifest.json`. Um backup nunca sobrescreve outro.
-- O manifesto tem: ambiente e banco de origem, data UTC, migrações registradas, impressão digital do schema,
-  contagem por tabela, SHA-256 do arquivo, versão do wrangler, commit do repositório e se contém dados pessoais.
-  Ele **não** contém valores das linhas.
-- O export pode deixar o banco indisponível por alguns instantes: faça fora do horário de aula.
+- **Destino inválido:** sem `TATAME_BACKUP_DIR`, ou com diretório dentro do repositório, no OneDrive, inexistente ou sem escrita, a operação é recusada **antes** de tocar no banco. O mesmo vale sem chave.
+- **Ordem:** o SQL é baixado para a área temporária, verificado, criptografado e reaberto para conferência. Só então é gravado em `TATAME_BACKUP_DIR/<ambiente>-<data UTC>/backup.tbk`, com `manifest.json`. Um backup nunca sobrescreve outro.
+- **Manifesto:** traz ambiente e banco de origem, data UTC, migrações registradas, impressão digital do schema, contagem por tabela, SHA-256 do conteúdo, versão do wrangler, commit do repositório, formato do contêiner e se contém dados pessoais. Ele **não** contém valores das linhas nem a chave.
+- **Disponibilidade:** o export pode deixar o banco indisponível por alguns instantes. Faça fora do horário de aula.
 
-**Quando:** sempre antes de migrar e uma vez por semana. **Retenção de referência:** os 4 mais recentes por semana e
-os 3 mais recentes por mês (`retentionPlan` em `tools/backup/storage.mjs` calcula quais manter). A remoção dos que
-saem da retenção ainda é manual: confira a lista antes de apagar.
+**Quando:** sempre antes de migrar e uma vez por semana.
+
+**Retenção de referência:** os 4 mais recentes por semana e os 3 mais recentes por mês. A função `retentionPlan`, em `tools/backup/storage.mjs`, calcula quais manter. A remoção dos que saem da retenção ainda é manual: confira a lista antes de apagar.
 
 ### 7.2 Verificar
 ```
-node tools/db.mjs verify --backup <id>
+node tools/db.mjs verify --backup <id>        (ou --file <backup.tbk>)
 ```
-Confere: SHA-256; importação num SQLite temporário; `integrity_check`; `foreign_key_check`; contagens iguais às do
-manifesto; schema igual ao do manifesto **e** ao esperado para as migrações registradas. O hash sozinho só prova que
-o arquivo não mudou; quem prova que ele serve é a importação + as conferências. Mesmo assim, `verify` **não é** um teste
-de restauração: para isso existe o `restore-test`.
+A ordem é sempre a mesma:
+1. **Autentica e descriptografa.** Se falhar, nada é aberto.
+2. **Compara** o `manifest.json` externo com o autenticado.
+3. **Verifica o conteúdo:** SHA-256, importação num SQLite temporário, `integrity_check`, `foreign_key_check`, contagens iguais às do manifesto, e schema igual ao do manifesto **e** ao esperado para as migrações registradas.
 
-### 7.3 Anonimizar (para staging)
+Mesmo assim, `verify` **não é** um teste de restauração. Para isso existe o `restore-test`.
+
+### 7.3 Pseudonimizar (para staging)
 ```
 node tools/db.mjs anonymize --backup <id>
 ```
-Gera um novo backup (`...-anon`) a partir de um backup verificado. Regras (detalhes em `tools/db/anonymize.mjs`):
-- **saem:** nomes (viram "Aluno N"/"Equipe N" pela ordem do ID, sem relação com o nome real), e-mails, telefones,
-  apelidos, peso, objetivos, observações (alunos, aulas, graduações, avaliações), títulos de aula, detalhes de
-  eventos, hashes de senha, sessões, tentativas de login (IPs), códigos de recuperação, código de configuração
-  inicial e nome da academia;
-- **generalizada:** data de nascimento vira 1º de julho do mesmo ano (mantém a faixa etária com erro de até 1 ano);
-  "sem data" continua sem data;
-- **ficam:** IDs (aleatórios), relações, quantidades, faixas, graus, datas de início/aulas/graduações, presenças,
-  avaliações, critérios e estados — o necessário para o comportamento ser o mesmo.
-- **Regra fechada:** coluna ou tabela nova sem regra explícita faz a anonimização falhar. Ao criar uma coluna nova,
-  acrescente a regra dela em `RULES`.
-- Depois de anonimizar, o wrapper procura no resultado **todos** os valores pessoais originais (com 4+ caracteres) e
-  recusa gravar se algum aparecer.
-- Na cópia anonimizada ninguém consegue entrar (hashes de senha trocados). Para usar o staging, gere um código de
-  recuperação para uma conta com `tools/reset-code.mjs` (ver `docs/recuperacao-de-senha.md`).
+Abre (autentica) um backup verificado e grava um novo backup criptografado (`...-anon`). O resultado é **pseudonimizado, não anônimo**: ficam quase-identificadores (datas de início, de faixa e grau, de aulas e graduações; padrão de presença; faixa e grau; ano de nascimento; status). Alguém que conheça a academia pode reconhecer pessoas por eles. Por isso a cópia continua criptografada, continua sendo dado pessoal e serve só para ensaio técnico.
+
+As regras estão em `RULES`, em `tools/db/anonymize.mjs`:
+- **Saem:**
+  - nomes (viram "Aluno N"/"Equipe N" pela ordem do ID aleatório);
+  - e-mails, telefones, apelidos, sexo, peso, objetivos;
+  - observações de alunos, aulas, graduações e avaliações; títulos de aula;
+  - detalhes de eventos;
+  - hashes de senha, sessões, tentativas de login (IPs), códigos de recuperação, código de configuração inicial;
+  - nome da academia.
+- **Generalizados:**
+  - nascimento vira 1º de julho do mesmo ano (idade com erro de até 1 ano; "sem data" continua sem data);
+  - `created_at`/`updated_at` de alunos e equipe ficam só com a data.
+- **Ficam:**
+  - IDs, relações, quantidades, faixas, graus, datas, presenças, avaliações, critérios, estados;
+  - o `created_at` de aulas e graduações, porque define a janela em que o professor pode editar o que registrou.
+- **Texto livre mantido e varrido (`scan`):** nomes de turmas, nomes e descrições de técnicas.
+- **Regra fechada:** tabela, coluna ou chave de `settings` sem regra faz a operação falhar. Ao criar uma coluna nova, acrescente a regra dela em `RULES`.
+- **Varredura de vazamento:** depois de anonimizar, a varredura percorre célula por célula todas as colunas substituídas e as `scan`. Procura:
+  - qualquer valor pessoal original com 4+ caracteres, como trecho;
+  - nomes e apelidos de 2–3 caracteres ("Ana", "Zé"), como palavra inteira, ignorando acento e caixa;
+  - e, nos campos livres, qualquer e-mail ou telefone.
+
+  Achou algo, a operação falha, informando só tabela.coluna e nunca o valor. Valores de 1 caractere e partes como "da"/"de"/"dos" não são procurados. As colunas `keep` (IDs, datas, números, enumerações com CHECK, revisadas uma a uma) não são varridas, para não dar falso positivo com nomes iguais a valores de domínio ("Admin", "Inativo").
+- **Falso positivo:** um nome de técnica igual a um apelido real (ex.: apelido "Kimura" e técnica "Kimura") faz a operação falhar. É proposital (falha segura). Nesse caso, renomeie o item de configuração ou trate o caso manualmente, com revisão.
+- **Login no staging:** na cópia pseudonimizada ninguém consegue entrar, porque os hashes de senha foram trocados. Para usar o staging, gere um código de recuperação para uma conta com `tools/reset-code.mjs` (ver `docs/recuperacao-de-senha.md`).
 
 ### 7.4 Importar
 ```
@@ -195,7 +249,7 @@ node tools/db.mjs import --env staging --backup <id-anon> --confirm-destination=
 ```
 - Destinos permitidos: `staging` e `restore-test`. **Produção nunca.**
 - `--confirm-destination=<nome do banco>` é obrigatório.
-- O backup é verificado antes. Destino com tabelas exige `--replace` (apaga tudo antes, filhas antes de pais).
+- O backup é autenticado e descriptografado e depois verificado; falha de autenticação ou chave ausente/errada impede qualquer comando de importação. O SQL em claro só existe na área temporária durante o import. Destino com tabelas exige `--replace` (apaga tudo antes, filhas antes de pais).
 - Backup com dados pessoais **não** entra em staging.
 - Depois de importar, as contagens do destino são comparadas com o manifesto.
 
@@ -205,7 +259,7 @@ node tools/db.mjs restore-test --env restore-test --backup <id> --confirm-destin
 ```
 Importa no banco descartável, reexporta, compara a "ida e volta" (schema e contagens), e roda o **Worker real** sobre
 a cópia (aplicando migrações pendentes nela, se o backup for antigo), conferindo alunos, painel e indicadores contra
-a referência independente da Etapa 4. O resultado fica no manifesto do backup (`restore_test`).
+a referência independente da Etapa 4. O resultado fica em `status.json` do backup (`restore_test`); o manifesto autenticado não muda.
 
 **Dados pessoais reais.** Um backup integral de produção só entra no `restore-test` com autorização específica:
 `--confirm-personal-data=<id do backup>` e terminal interativo. Provar a restauração de uma cópia **anonimizada**
@@ -260,8 +314,10 @@ A Cloudflare só aceita pedido de recuperação (undelete) em até **7 dias**. D
 
 ## 11. Dados pessoais e segredos
 
-- Backups integrais contêm dados de alunos e equipe e hashes de senha/sessão: trate como **sensíveis**. Guarde em disco
-  cifrado, fora do OneDrive e do repositório, com acesso só de quem opera o banco.
+- Backups integrais contêm dados de alunos e equipe e hashes de senha/sessão: trate como **sensíveis**. Eles são gravados
+  criptografados (seção 7.0); mesmo assim guarde em disco cifrado, fora do OneDrive e do repositório, com acesso só de quem
+  opera o banco, e a chave em lugar separado dos backups.
+- Cópias pseudonimizadas continuam sendo dados pessoais (quase-identificadores permanecem).
 - O wrapper não imprime valores das linhas; os relatórios mostram só contagens, nomes de tabelas e impressões digitais.
 - O manifesto não contém valores das linhas, tokens ou credenciais.
 - Eventos de infraestrutura (migração, backup, restauração) **não** vão para o `audit_log` (que é de negócio). A
@@ -274,3 +330,7 @@ A Cloudflare só aceita pedido de recuperação (undelete) em até **7 dias**. D
 - Os testes do wrapper simulam o wrangler sobre SQLite real; o fluxo real contra o D1 só será provado no ensaio da
   seção 10.
 - A retenção é calculada, mas a remoção dos backups antigos é manual.
+- Backup e descriptografia carregam o arquivo inteiro na memória (adequado ao limite de 500 MB do D1 gratuito); não há
+  rotação/recriptografia automática de chave; a área temporária de texto puro não sobrevive a uma queda abrupta do processo
+  sem limpeza manual.
+- A pseudonimização mantém datas e padrão de presença: não é anonimização absoluta.
