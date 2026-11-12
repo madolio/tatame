@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, copyFileSync, existsSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { openWorld, unfreezeClock } from './ref/harness.mjs';
 import { buildManual } from './ref/scenarios.mjs';
@@ -140,6 +140,14 @@ try {
   ok(await run(['import', '--env', 'staging', '--backup', legacyId, '--confirm-destination=tatame-staging'], ENVR, sim, envs) === 3 && calls.length === 0, 'manifest.json externo da 5.1 editado: import recusado sem nenhum comando');
   writeFileSync(join(store, legacyId, 'manifest.json'), JSON.stringify({ ...manifest, id: legacyId }, null, 2));
   ok(await run(['import', '--env', 'staging', '--backup', legacyId, '--confirm-destination=tatame-staging'], ENVR, sim, envs) === 0 && calls.some(c => c.includes('--file')), 'backup válido da 5.1: importado (simulado) com contagens iguais às do manifesto');
+
+  // ================= gerador de backup sintético (ensaio D1) =================
+  const synth = (args, env) => spawnSync(process.execPath, [join(ROOT, 'tools/db-synthetic.mjs'), ...args], { encoding: 'utf8', env: { ...process.env, TATAME_BACKUP_DIR: '', TATAME_BACKUP_KEY_FILE: '', TATAME_BACKUP_KEY: '', ...env } });
+  const s1 = synth(['--sem-002'], ENVR);
+  const sid = /backup (\S+) gravado/.exec(s1.stdout)?.[1];
+  logs.push(s1.stdout, s1.stderr);
+  ok(s1.status === 0 && sid && /^sintetico-sem002-.*-anon$/.test(sid) && await run(['verify', '--backup', sid], ENVR) === 0, 'db-synthetic --sem-002: backup sintético criptografado, anonimizado e verificado (só 000 e 001)');
+  ok(synth([], { TATAME_BACKUP_DIR: store }).status === 3 && synth([], { TATAME_BACKUP_KEY_FILE: recovered }).status === 3, 'db-synthetic sem chave ou sem diretório: recusado');
 
   // ================= a chave nunca aparece em saída =================
   const all = logs.join('\n');

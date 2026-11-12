@@ -116,5 +116,6 @@ export function cleanResidue(opts = {}) {
   return { removed, kept };
 }
 
-// Mensagem de erro segura: tira literais entre aspas (podem ser dados) e limita o tamanho.
-export const redact = (s, max = 300) => String(s ?? '').replace(/'(?:[^']|'')*'|"(?:[^"\\]|\\.)*"/g, '‹omitido›').replace(/X'[0-9a-fA-F]*'/g, '‹omitido›').slice(0, max);
+// Mensagem de erro segura: tira URLs (o `d1 export` imprime uma URL assinada que baixa o banco em claro) e literais
+// entre aspas (podem ser dados) e limita o tamanho.
+export const redact = (s, max = 300) => String(s ?? '').replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi, '‹url omitida›').replace(/'(?:[^']|'')*'|"(?:[^"\\]|\\.)*"/g, '‹omitido›').replace(/X'[0-9a-fA-F]*'/g, '‹omitido›').slice(0, max);

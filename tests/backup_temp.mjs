@@ -91,6 +91,11 @@ try {
   const outs2 = [];
   const c2 = await main(['temp-clean'], { environments: () => ({}), wranglerVersion: () => '', exec: () => { throw new Error('não deveria executar'); }, isTTY: () => false, ask: async () => '', out: m => outs2.push(m), err: m => outs2.push(m), env: {} });
   ok(c2 === 0 && outs2.some(o => o.startsWith('[temp-clean]')), 'operação temp-clean (offline, só lista sem --remove) roda sem tocar no wrangler');
+  const signed = 'You can also download your export from the following URL manually. This link will be valid for one hour: https://d1-export.example.r2.cloudflarestorage.com/abc.sql?X-Amz-Signature=deadbeef&X-Amz-Expires=3600';
+  ok(!redact(signed).includes('X-Amz-Signature') && redact(signed).includes('‹url omitida›'), 'redact omite URLs (a URL assinada do d1 export baixa o banco em claro)');
+  const { wranglerEnv } = await import('../tools/db/wrangler.mjs');
+  const we = wranglerEnv({ PATH: 'x', WRANGLER_WRITE_LOGS: 'true' });
+  ok(we.WRANGLER_WRITE_LOGS === 'false' && we.WRANGLER_SEND_METRICS === 'false' && we.PATH === 'x', 'wrangler roda sem arquivo de log em disco (onde iria a URL assinada) e sem telemetria, mesmo se o ambiente pedir o contrário');
   console.log('\nTEMPORÁRIOS OK');
 } finally {
   try { chmodSync(join(base, 'ro'), 0o700); } catch {}
