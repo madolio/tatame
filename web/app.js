@@ -141,8 +141,9 @@ function renderLogin(msg = '', setup = false) {
       <div class="err" id="auth-err" role="alert">${esc(msg)}</div>
       <button class="btn block" type="submit">${setup ? 'Criar academia' : 'Entrar'}</button>
     </form>
-    ${setup ? '' : '<p class="muted xs" style="text-align:center;margin-top:16px">Esqueceu a senha? Peça ao administrador da academia para redefinir.</p>'}
+    ${setup ? '' : '<p class="muted xs" style="text-align:center;margin-top:16px">Esqueceu a senha? Peça ao administrador da academia para redefinir.</p><button type="button" class="btn ghost sm block" id="to-reset">Tenho um código de recuperação</button>'}
   </div></div>`;
+  if (!setup) $('#to-reset').onclick = () => renderReset();
   $('#auth').onsubmit = async e => {
     e.preventDefault();
     const b = formObj(e.target), err = $('#auth-err'); err.textContent = '';
@@ -154,6 +155,38 @@ function renderLogin(msg = '', setup = false) {
     try {
       await api('POST', setup ? '/api/setup' : '/api/login', b);
       await start();
+    } catch (ex) { err.textContent = ex.message; }
+    finally { btn.classList.remove('loading'); }
+  };
+}
+
+// Recuperação de senha com código entregue pelo operador (ver tools/reset-code.mjs). A validação é toda do servidor.
+function renderReset(msg = '') {
+  $('#root').innerHTML = `<div class="auth"><div class="auth-box">
+    <div class="brand">${belt('preta', 4, true)}<div><h1>Tatame</h1><div class="muted small">Recuperar acesso</div></div></div>
+    <form id="reset" class="stack" novalidate>
+      <p class="muted small" style="margin:0 0 4px">Digite o e-mail da conta, o código que você recebeu e escolha uma nova senha. O código vale por 30 minutos e só pode ser usado uma vez.</p>
+      <label class="field"><span>E-mail</span><input class="input" name="email" type="email" autocomplete="email" required autofocus></label>
+      <label class="field"><span>Código de recuperação</span><input class="input" name="code" autocomplete="off" autocapitalize="characters" spellcheck="false" required style="text-transform:uppercase;letter-spacing:.08em"></label>
+      <label class="field"><span>Nova senha</span><input class="input" name="password" type="password" autocomplete="new-password" minlength="8" required></label>
+      <label class="field"><span>Repita a nova senha</span><input class="input" name="password_confirm" type="password" autocomplete="new-password" minlength="8" required></label>
+      <div class="err" id="reset-err" role="alert">${esc(msg)}</div>
+      <button class="btn block" type="submit">Redefinir senha</button>
+    </form>
+    <button type="button" class="btn ghost sm block" id="to-login" style="margin-top:16px">Voltar para o login</button>
+  </div></div>`;
+  $('#to-login').onclick = () => renderLogin();
+  $('#reset').onsubmit = async e => {
+    e.preventDefault();
+    const b = formObj(e.target), err = $('#reset-err'); err.textContent = '';
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(b.email).trim())) return err.textContent = 'Informe um e-mail válido.';
+    if (!String(b.code).trim()) return err.textContent = 'Informe o código de recuperação.';
+    if (String(b.password).length < 8) return err.textContent = 'A senha precisa ter pelo menos 8 caracteres.';
+    if (b.password !== b.password_confirm) return err.textContent = 'As senhas não conferem.';
+    const btn = e.target.querySelector('button'); btn.classList.add('loading');
+    try {
+      await api('POST', '/api/reset', b);
+      renderLogin('Senha redefinida. Entre com a nova senha.');
     } catch (ex) { err.textContent = ex.message; }
     finally { btn.classList.remove('loading'); }
   };

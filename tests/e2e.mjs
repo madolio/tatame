@@ -34,7 +34,7 @@ await ctx.route('**/*', async route => {
 });
 const page = await ctx.newPage();
 page.on('pageerror', e => errors.push('pageerror: ' + e.message));
-page.on('console', m => { if (m.type() === 'error' && !/Content Security Policy|fonts|status of 401/.test(m.text())) errors.push('console: ' + m.text()); });
+page.on('console', m => { if (m.type() === 'error' && !/Content Security Policy|fonts|status of 40[01]/.test(m.text())) errors.push('console: ' + m.text()); });
 const shot = n => page.screenshot({ path: `${SHOTS}/${n}.png`, fullPage: true });
 const clear = () => page.evaluate(() => document.querySelectorAll('.toast').forEach(t => t.remove()));
 const toastText = async () => (await page.locator('.toast').last().textContent({ timeout: 5000 })).trim();
@@ -203,6 +203,33 @@ await step('professor sem permissão de admin e logout', async () => {
   await page.fill('#stu-form [name=phone]', '11 98888-7777'); await clear(); await page.click('#stu-form [type=submit]'); assert.match(await toastText(), /Dados salvos/);
   await page.click('.nav a[data-tab=aulas]'); await page.click('[data-act=aulas-tab][data-id=chamadas]'); await page.click('text=Nova chamada'); await page.waitForSelector('#lesson-screen');
   await page.click('#att-list .att >> nth=0'); await clear(); await page.click('[data-act=lesson-save]'); assert.match(await toastText(), /Chamada salva/);
+});
+
+await step('recuperação de senha por código', async () => {
+  const RC = await import('../tools/reset-code.mjs');
+  await page.evaluate(() => { location.hash = '#ajustes'; }); await page.waitForSelector('.top [data-act=logout]'); await page.click('.top [data-act=logout]'); await page.click('#sheet [data-x=ok]');
+  await page.click('#to-reset'); await page.waitForSelector('#reset');
+  await shot('11-recuperar');
+  await page.fill('#reset [name=email]', 'rafael@exemplo.com'); await page.fill('#reset [name=code]', RC.generateCode());
+  await page.fill('#reset [name=password]', 'rafael-nova-2026'); await page.fill('#reset [name=password_confirm]', 'rafael-nova-2026'); await page.click('#reset [type=submit]');
+  await page.waitForSelector('#reset-err:has-text("Código inválido")');
+  const id = DB.raw.prepare("SELECT id FROM staff WHERE email = 'rafael@exemplo.com'").get().id;
+  const code = RC.generateCode(); DB.raw.exec(RC.buildSql(id, code));
+  await page.fill('#reset [name=code]', code); await page.fill('#reset [name=password_confirm]', 'diferente-123'); await page.click('#reset [type=submit]');
+  await page.waitForSelector('#reset-err:has-text("não conferem")');
+  await page.fill('#reset [name=password_confirm]', 'rafael-nova-2026'); await page.click('#reset [type=submit]');
+  await page.waitForSelector('#auth-err:has-text("Senha redefinida")');
+  await page.fill('[name=email]', 'rafael@exemplo.com'); await page.fill('[name=password]', 'rafael2026'); await page.click('button[type=submit]');
+  await page.waitForSelector('text=E-mail ou senha incorretos');
+  await page.fill('[name=password]', 'rafael-nova-2026'); await page.click('button[type=submit]');
+  await page.waitForSelector('#main h1:has-text("Academia Exemplo BJJ")');
+  // código já usado
+  await page.evaluate(() => { location.hash = '#ajustes'; }); await page.waitForSelector('.top [data-act=logout]'); await page.click('.top [data-act=logout]'); await page.click('#sheet [data-x=ok]'); await page.click('#to-reset');
+  await page.fill('#reset [name=email]', 'rafael@exemplo.com'); await page.fill('#reset [name=code]', code);
+  await page.fill('#reset [name=password]', 'outra-senha-123'); await page.fill('#reset [name=password_confirm]', 'outra-senha-123'); await page.click('#reset [type=submit]');
+  await page.waitForSelector('#reset-err:has-text("já foi utilizado")');
+  await page.click('#to-login'); await page.fill('[name=email]', 'rafael@exemplo.com'); await page.fill('[name=password]', 'rafael-nova-2026'); await page.click('button[type=submit]');
+  await page.waitForSelector('#main h1:has-text("Academia Exemplo BJJ")');
 });
 
 await step('desktop', async () => {
