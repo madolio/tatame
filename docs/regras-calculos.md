@@ -116,3 +116,32 @@ O modelo de dados atual **não distingue** os dois casos: ambos são uma aula se
 3. D4b: confirmar a carência de 14 dias para alunos sem presença.
 4. D3: confirmar que a experiência total deve somar `from_imported_belt` das graduações de faixa (e tratar a edição administrativa de `imported_classes_belt`).
 5. Aplicar cada regra provisória ao Worker, uma por vez, com o teste de paridade como prova.
+
+## 7. Paridade: como é verificada
+
+`node tests/parity.mjs` (também em `npm test`) compara, campo a campo, o Worker real com `tests/ref/reference.mjs`, uma implementação independente (aritmética de datas própria, sem importar nada de `web/`).
+
+- **Relógio fixo:** o teste congela `Date` (12:00 de Brasília) para o resultado não depender do dia da execução. O Worker não foi alterado.
+- **Dados:** (1) cenário manual com 35 alunos, cada um ilustrando um caso (sem presença, aula antes do início ou da faixa, janelas de 29/30/83/84/89/90 dias, trancado e inativo, início no futuro, sem nascimento, faixas infantis, graduações feitas pela API real, inclusive desfazer), executado em duas datas (17/06/2026 e 30/04/2026, esta para a fronteira de fim de mês); (2) conjunto gerado com semente fixa (45 alunos, 181 aulas, 1.793 presenças); (3) banco vazio.
+- **Passe A (fidelidade):** referência com o comportamento atual. Deve coincidir com o Worker em tudo, exceto na fronteira de fim de mês do item 8. Resultado: 0 divergências em ~6.200 campos fora essa fronteira. É a prova de que a referência entendeu o Worker.
+- **Passe B (regras provisórias):** divergências esperadas, catalogadas em `tests/ref/divergencias.json` com classe, evidência e **contagem exata**. O teste falha se surgir divergência fora do catálogo, se uma contagem mudar ou se uma entrada deixar de ocorrer; ninguém "faz passar" mudando um número sem rever a evidência.
+- **Tolerâncias:** 0,15 mês nos valores de meses (0,1 de diferença de definição + 0,05 de arredondamento) e 5 pontos em `progress`. `met`, `ready` e todas as contagens são exatas.
+- **Evolução de faixa e grau:** as invariantes da seção 3 são conferidas contra a tabela de graduações dos alunos promovidos e desfeitos pela API. Nenhuma inconsistência encontrada.
+- **Sensibilidade:** com um erro de uma linha no Worker (janela de 30 dias virando 29), a suíte falhou apontando aluno, campo e valores; o arquivo foi restaurado em seguida.
+
+### Divergências do passe B (cada uma com evidência reproduzível em `node tests/parity.mjs --detalhe`)
+
+| Regra | Efeito observado | Classe |
+|---|---|---|
+| D1 | Sem data de nascimento o Worker usa idade 0: aluno com 4 graus, 900 dias e currículo dominado fica em 75% e nunca pronto; amarela sem nascimento aponta azul em vez de laranja | regra aprovada |
+| D3 | Promover de faixa zera `imported_classes_belt` e a experiência cai: 300 pontos ("Avançado") viram 2 ("Novato") | regra aprovada |
+| D4 | Início no futuro: `days_absent = −10` | regra aprovada |
+| D5 | `new_this_month` conta inativos e início futuro (7 contra 4) | regra aprovada |
+| D6 | Média por aula inclui aulas sem presença (1,7 contra 1,9); o modelo não separa "sem chamada" de "chamada com zero" | depende de modelo |
+| D7 | Média semanal dividida sempre por 12 (0,5 contra 2,0 para quem entrou há 2 semanas) | regra aprovada |
+| item 8 | 31/01 → 30/04, alvo de 3 meses: calendário cumpre, aproximação dá 2,97 | tolerância |
+| D1/D4 | Sinalizações `needs_profile` e `data_issues` não existem no Worker | campo novo |
+
+Sem divergência: janelas de 30, 84 e 90 dias, última aula, contagens por faixa e por semana, ocupação por turma, mapa de calor (contagens), técnicas, currículo e aprendizado, critérios de graduação, desfazer graduação.
+
+Limitações da verificação: a referência não prova que a regra de negócio é pedagogicamente correta, só que o código a executa como escrita; os dados gerados não incluem graduações (cobertas no cenário manual); o `near_list` com mais de 8 alunos empatados não tem ordem definida e é comparado como conjunto.
