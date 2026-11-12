@@ -1,0 +1,221 @@
+{
+  "versao": 1,
+  "descricao": "Divergências conhecidas entre o Worker e a referência (tests/ref/reference.mjs). tests/parity.mjs falha se aparecer divergência fora deste catálogo, se uma contagem mudar ou se uma entrada deixar de ocorrer. Passe A: referência com o comportamento atual (deve coincidir com o Worker). Passe B: referência com as regras provisórias aprovadas.",
+  "classes": {
+    "regra-aprovada": "A regra de referência foi aprovada como provisória; o Worker ainda não a aplica.",
+    "depende-de-modelo": "A regra aprovada não é implementável sem mudar o modelo de dados.",
+    "tolerancia": "Diferença de definição aceita e documentada (item 8, meses).",
+    "campo-novo": "Sinalização que só a referência produz (cadastro incompleto, dado inválido).",
+    "derivado": "Efeito, no painel, de divergências de aluno já catalogadas."
+  },
+  "tolerancias": {
+    "meses": 0.15,
+    "progresso_pontos": 5
+  },
+  "entradas": [
+    {
+      "id": "item8-fronteira-fim-de-mes",
+      "classe": "tolerancia",
+      "regra": "item 8",
+      "passe": "A",
+      "entidades": [
+        "FimDeMes"
+      ],
+      "campos": [
+        "aluno:criteria.months.met",
+        "aluno:ready"
+      ],
+      "estado": "aguarda decisão (meses-calendário × aproximação)",
+      "evidencia": "Grau recebido em 31/01, hoje 30/04, alvo 3 meses. Meses-calendário: 3,0 (31/01 + 3 meses = 30/04), critério cumprido. Aproximação do Worker: 3 + (30 − 31) ÷ 30,44 = 2,97, não cumprido.",
+      "contagem": {
+        "manual@2026-04-30": 2
+      }
+    },
+    {
+      "id": "item8-efeito-no-painel",
+      "classe": "derivado",
+      "regra": "item 8",
+      "passe": "A",
+      "campos": [
+        "painel:kpis.ready",
+        "painel:ready_list",
+        "painel:near_list"
+      ],
+      "estado": "consequência da fronteira de fim de mês",
+      "evidencia": "Em 30/04 o aluno FimDeMes está em 'quase prontos' no Worker e em 'prontos' na referência; o total de prontos é 6 contra 7.",
+      "contagem": {
+        "manual@2026-04-30": 3
+      }
+    },
+    {
+      "id": "B-item8-fronteira-fim-de-mes",
+      "classe": "tolerancia",
+      "regra": "item 8",
+      "passe": "B",
+      "entidades": [
+        "FimDeMes"
+      ],
+      "campos": [
+        "aluno:criteria.months.met",
+        "aluno:ready"
+      ],
+      "estado": "aguarda decisão (meses-calendário × aproximação)",
+      "evidencia": "Mesma fronteira do passe A, repetida porque o passe B também usa meses-calendário.",
+      "contagem": {
+        "manual@2026-04-30": 2
+      }
+    },
+    {
+      "id": "D1-idade-sem-nascimento",
+      "classe": "regra-aprovada",
+      "regra": "D1",
+      "passe": "B",
+      "campos": [
+        "aluno:criteria.age.presente",
+        "aluno:next.to_belt",
+        "aluno:progress",
+        "aluno:ready"
+      ],
+      "estado": "aguarda aplicação no Worker",
+      "evidencia": "SemNascBrancaPronto (adulto, 4 graus, 900 dias, 200 aulas importadas, currículo dominado, sem data de nascimento): Worker usa idade 0 de 16, não fica pronto, progresso 75 e próxima faixa azul. Referência ignora o critério de idade: pronto, progresso 100, próxima faixa a definir. SemNascAmarelaPronto: Worker indica azul como próxima faixa; referência indica laranja.",
+      "contagem": {
+        "manual@2026-06-17": 14,
+        "manual@2026-04-30": 14,
+        "gerado@2026-06-17": 3
+      }
+    },
+    {
+      "id": "D1-sinalizacao-cadastro",
+      "classe": "campo-novo",
+      "regra": "D1",
+      "passe": "B",
+      "campos": [
+        "aluno:needs_profile",
+        "aluno:data_issues.sem_nascimento"
+      ],
+      "estado": "o Worker não tem o campo",
+      "evidencia": "Alunos sem data de nascimento passam a ser marcados como cadastro incompleto (needs_profile) para a interface pedir o complemento.",
+      "contagem": {
+        "manual@2026-06-17": 8,
+        "manual@2026-04-30": 8,
+        "gerado@2026-06-17": 14
+      }
+    },
+    {
+      "id": "D3-experiencia-acumulada",
+      "classe": "regra-aprovada",
+      "regra": "D3",
+      "passe": "B",
+      "campos": [
+        "aluno:experience.score",
+        "aluno:experience.level",
+        "aluno:experience.label"
+      ],
+      "estado": "aguarda aplicação no Worker",
+      "evidencia": "ImportadoPromovido: 300 aulas importadas na faixa azul, promovido a roxa. Worker: 2 pontos (as 2 presenças), 'Novato', porque a promoção zera imported_classes_belt. Referência: 302 pontos, 'Avançado' (300 vêm de promotions.from_imported_belt). FaixaDepoisDeGrau: mesma causa (50 aulas).",
+      "contagem": {
+        "manual@2026-06-17": 6,
+        "manual@2026-04-30": 6
+      }
+    },
+    {
+      "id": "D4-ausencia-negativa",
+      "classe": "regra-aprovada",
+      "regra": "D4",
+      "passe": "B",
+      "campos": [
+        "aluno:days_absent"
+      ],
+      "estado": "aguarda aplicação no Worker",
+      "evidencia": "InicioFuturo (início daqui a 10 dias, sem aulas): Worker mostra days_absent = −10; referência devolve null e não classifica como em risco.",
+      "contagem": {
+        "manual@2026-06-17": 1,
+        "manual@2026-04-30": 1,
+        "gerado@2026-06-17": 2
+      }
+    },
+    {
+      "id": "D4-sinalizacao-inicio-futuro",
+      "classe": "campo-novo",
+      "regra": "D4",
+      "passe": "B",
+      "campos": [
+        "aluno:data_issues.inicio_futuro"
+      ],
+      "estado": "o Worker não tem o campo",
+      "evidencia": "Início no futuro é dado inválido e fica sinalizado em data_issues.",
+      "contagem": {
+        "manual@2026-06-17": 2,
+        "manual@2026-04-30": 2,
+        "gerado@2026-06-17": 2
+      }
+    },
+    {
+      "id": "D5-novos-no-mes",
+      "classe": "regra-aprovada",
+      "regra": "D5",
+      "passe": "B",
+      "campos": [
+        "painel:kpis.new_this_month"
+      ],
+      "estado": "aguarda aplicação no Worker",
+      "evidencia": "Em 17/06 o Worker conta 7 e a referência 4: o Worker inclui aluno inativo iniciado no mês e alunos com início no futuro.",
+      "contagem": {
+        "manual@2026-06-17": 1,
+        "manual@2026-04-30": 1,
+        "gerado@2026-06-17": 1
+      }
+    },
+    {
+      "id": "D6-media-sem-aulas-vazias",
+      "classe": "depende-de-modelo",
+      "regra": "D6",
+      "passe": "B",
+      "campos": [
+        "painel:kpis.avg_per_lesson_30d",
+        "painel:occupancy.avg",
+        "painel:heat.avg"
+      ],
+      "estado": "aguarda decisão do marcador de chamada (migração)",
+      "evidencia": "Em 17/06, presença média por aula nos últimos 30 dias: Worker 1,7, referência 1,9 (aulas sem presença saem do denominador). O modelo não distingue 'sem chamada' de 'chamada com zero presentes'; a referência usa 'nenhuma presença' como aproximação.",
+      "contagem": {
+        "manual@2026-06-17": 5,
+        "manual@2026-04-30": 5,
+        "gerado@2026-06-17": 3
+      }
+    },
+    {
+      "id": "D7-media-semanal",
+      "classe": "regra-aprovada",
+      "regra": "D7",
+      "passe": "B",
+      "campos": [
+        "aluno:weekly_avg"
+      ],
+      "estado": "aguarda aplicação no Worker",
+      "evidencia": "Entrou14Dias, 6 aulas em 2 semanas: Worker 0,5 por semana (divide sempre por 12), referência 2,0 (3 semanas desde o início).",
+      "contagem": {
+        "manual@2026-06-17": 4,
+        "manual@2026-04-30": 4,
+        "gerado@2026-06-17": 1
+      }
+    },
+    {
+      "id": "B-efeito-no-painel",
+      "classe": "derivado",
+      "regra": "D1",
+      "passe": "B",
+      "campos": [
+        "painel:kpis.ready",
+        "painel:ready_list",
+        "painel:near_list"
+      ],
+      "estado": "consequência de D1 (e, em 30/04, do item 8)",
+      "evidencia": "Alunos sem nascimento passam a contar como prontos; em 17/06 o total de prontos vai de 7 (Worker) para 11 (referência).",
+      "contagem": {
+        "manual@2026-06-17": 3,
+        "manual@2026-04-30": 3
+      }
+    }
+  ]
+}
