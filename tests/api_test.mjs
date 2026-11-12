@@ -167,6 +167,20 @@ ok(d.student.belt === 'branca' && d.student.degrees === 4, 'desfazer graduação
   ok((await call('GET', '/api/lessons/' + zero.body.id)).body.roll_called === 1, 'D6: a API devolve o marcador');
   for (const l of [semChamada, zero, comAluno]) await call('DELETE', '/api/lessons/' + l.body.id);
 }
+// D7: média semanal = presenças em 84 dias ÷ semanas desde o início (mínimo 1, máximo 12)
+{
+  const wa = async s => (await call('GET', '/api/students/' + s.id)).body.student.metrics.weekly_avg;
+  const lesson = async (day, ids) => (await call('POST', '/api/lessons', { date: ago(day), start_time: '05:00', end_time: '05:30', student_ids: ids })).body.id;
+  const n14 = (await call('POST', '/api/students', { name: 'Semanal 14d', start_date: ago(14) })).body.student;
+  const hoje = (await call('POST', '/api/students', { name: 'Semanal hoje', start_date: ago(0) })).body.student;
+  const ids = [];
+  for (const d of [1, 3, 5, 8, 10, 12]) ids.push(await lesson(d, [n14.id]));
+  ids.push(await lesson(0, [hoje.id]));
+  ok(await wa(n14) === 2, 'D7: 6 aulas em 15 dias de cadastro (3 semanas) = 2,0 por semana (antes dividia por 12: 0,5)');
+  ok(await wa(hoje) === 1, 'D7: aluno que começou hoje usa 1 semana (sem divisão por zero)');
+  for (const l of ids) await call('DELETE', '/api/lessons/' + l);
+  for (const s of [n14, hoje]) await call('DELETE', '/api/students/' + s.id);
+}
 // D1: sem data de nascimento não se presume idade nem trilha (infantil/adulta)
 {
   const sn = (await call('POST', '/api/students', { name: 'Sem Nascimento', start_date: ago(900), belt: 'branca', degrees: 4, belt_since: ago(800), degree_since: ago(300), imported_classes_belt: 200 })).body.student;

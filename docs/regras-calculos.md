@@ -22,9 +22,9 @@ Documento de referência para a paridade (`tests/parity.mjs`) e para o TCC. Cada
 | `mat_hours` | soma de `fim − início` das aulas presentes, em horas, 1 casa | igual |
 | `techniques_seen` | técnicas distintas passadas em aulas em que o aluno esteve | igual |
 
-### Média semanal (`weekly_avg`) — D7 [provisória]
+### Média semanal (`weekly_avg`) — D7 [aprovada e aplicada]
 `presenças na janela de 84 dias ÷ semanas`, onde `semanas = min(12, máx(1, ⌈(dias desde o início + 1) / 7⌉))`. O denominador cresce com o tempo de casa até 12 e nunca é menor que 1 (sem divisão por zero e sem inflar a média de quem entrou ontem).
-**Atual:** divide sempre por 12. Quem entrou há 2 semanas com 6 aulas aparece com 0,5 por semana (a média real é 3).
+**Aplicação:** o Worker usa essa fórmula. Antes da D7 dividia sempre por 12: quem entrou há 2 semanas com 6 aulas aparecia com 0,5 por semana (agora 2,0, três semanas de cadastro contando o dia de hoje). Início futuro conta 1 semana.
 
 ### Ausência e risco de evasão (`days_absent`, `at_risk`) — D4 e D4b [aprovadas e aplicadas]
 - Com presença: `days_absent = hoje − última presença`.
@@ -142,7 +142,6 @@ O marcador `lessons.roll_called` (migração `db/migrations/002_marcador_de_cham
 
 | Regra | Efeito observado | Classe |
 |---|---|---|
-| D7 | Média semanal dividida sempre por 12 (0,5 contra 2,0 para quem entrou há 2 semanas) | regra aprovada |
 | item 8 | 31/01 → 30/04, alvo de 3 meses: calendário cumpre, aproximação dá 2,97 | tolerância |
 
 Sem divergência: janelas de 30, 84 e 90 dias, última aula, contagens por faixa e por semana, ocupação por turma, mapa de calor (contagens), técnicas, currículo e aprendizado, critérios de graduação, desfazer graduação.

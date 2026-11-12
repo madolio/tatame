@@ -66,22 +66,6 @@
       }
     },
     {
-      "id": "D7-media-semanal",
-      "classe": "regra-aprovada",
-      "regra": "D7",
-      "passe": "B",
-      "campos": [
-        "aluno:weekly_avg"
-      ],
-      "estado": "aguarda aplicação no Worker",
-      "evidencia": "Entrou14Dias, 6 aulas em 2 semanas: Worker 0,5 por semana (divide sempre por 12), referência 2,0 (3 semanas desde o início).",
-      "contagem": {
-        "manual@2026-06-17": 4,
-        "manual@2026-04-30": 4,
-        "gerado@2026-06-17": 1
-      }
-    },
-    {
       "id": "B-efeito-no-painel",
       "classe": "derivado",
       "regra": "item 8",

@@ -2,7 +2,7 @@
 // Independente do Worker: não importa nada de web/. Lê linhas cruas do banco e devolve os mesmos indicadores.
 //
 // opts.legacy liga, regra por regra, o comportamento ATUAL do Worker no lugar da regra de referência:
-//   weekly (D7).
+//   (nenhuma regra provisória pendente: todas as divergências aprovadas foram aplicadas ao Worker).
 // Com todos ligados, a referência deve reproduzir o Worker; é assim que se prova que ela o entendeu
 // (passe A) antes de se ver onde a regra nova diverge (passe B).
 import { toDay, addDays, weekday, calendarMonths, ageYears, firstOfMonth, fromDay } from './dates.mjs';
@@ -22,7 +22,7 @@ const levelOf = (table, v) => { let i = 0; table.forEach(([min], k) => { if (v >
 const by = (rows, key) => { const m = new Map(); for (const r of rows) { const k = r[key]; if (!m.has(k)) m.set(k, []); m.get(k).push(r); } return m; };
 
 export function computeReference(data, today, opts = {}) {
-  const L = opts.legacy === 'all' ? { weekly: 1 } : (opts.legacy || {});
+  const L = opts.legacy === 'all' ? {} : (opts.legacy || {});
   const T = toDay(today);
   const rules = Object.fromEntries(data.rules.map(r => [r.belt, r]));
   const lessonById = new Map(data.lessons.map(l => [l.id, l]));
@@ -50,7 +50,7 @@ export function computeReference(data, today, opts = {}) {
     const sinceBelt = rows.filter(r => r.day >= toDay(st.belt_since)).length + (st.imported_classes_belt || 0);
     // frequência semanal (D7)
     const num84 = rows.filter(r => within(84, r)).length;
-    const weeks = L.weekly ? 12 : Math.min(12, Math.max(1, Math.ceil((Math.max(0, T - start) + 1) / 7)));
+    const weeks = Math.min(12, Math.max(1, Math.ceil((Math.max(0, T - start) + 1) / 7)));
     // ausência (D4)
     let daysAbsent;
     if (last) daysAbsent = Math.max(0, T - toDay(last));

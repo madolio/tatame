@@ -199,7 +199,10 @@ function studentMetrics(st, core, today, attByStudent, skillsByStudent, lessonTe
   const sinceBelt = att.filter(a => a.date >= st.belt_since).length + (st.imported_classes_belt || 0);
   const d30 = addDays(today, -30), d84 = addDays(today, -84);
   const last30 = att.filter(a => a.date > d30).length;
-  const weekly = att.filter(a => a.date > d84).length / 12;
+  // D7: média por semana desde o início do aluno, com denominador limitado a 12 semanas (aluno novo não é diluído por semanas que não existiram).
+  // Semanas = ceil((dias desde o início + 1) / 7), no mínimo 1 (sem divisão por zero; início futuro conta como 1).
+  const weeksActive = Math.min(12, Math.max(1, Math.ceil((Math.max(0, daysBetween(st.start_date, today)) + 1) / 7)));
+  const weekly = att.filter(a => a.date > d84).length / weeksActive;
   const hours = att.reduce((t, a) => t + Math.max(0, minutes(a.end_time) - minutes(a.start_time)), 0) / 60;
   const trainingMonths = Math.max(0, monthsBetween(st.start_date, today)) + (st.prior_months || 0);
   // Experiência total acompanha toda a trajetória: presenças no sistema + aulas importadas da faixa atual +
