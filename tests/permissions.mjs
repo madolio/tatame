@@ -44,6 +44,7 @@ const T = [
   ['GET', '/api/status', null, ['ok', 'ok', 'ok']],
   ['POST', '/api/setup', { academy_name: 'X', name: 'Y', email: 'z@x.com', password: 'senhaforte1' }, [409, 409, 409]],
   ['POST', '/api/login', { email: 'nao@x.com', password: 'senhaerrada' }, [401, 401, 401]],
+  ['POST', '/api/reset', { email: 'nao@x.com', code: 'AAAAA-AAAAA-AAAAA-AAAAA-AAAAA-A', password: 'senhanova123' }, [400, 400, 400]],
   ['POST', '/api/logout', null, ['ok', 'skip', 'skip']],
   ['GET', '/api/me', null, [401, 'ok', 'ok']],
   ['PUT', '/api/me/password', { current: 'x', password: 'senhanova123' }, [401, 400, 400]],

@@ -149,6 +149,14 @@ async function rateLimited(db, pairs) {
 }
 // Sal fixo para conferir uma senha contra uma conta que não existe: o tempo de resposta fica igual ao de uma conta real.
 const GHOST_SALT = 'dGF0YW1lLWdob3N0LXNhbHQ=';
+// ---------- recuperação de senha por código ----------
+// Duas responsabilidades separadas: (1) VALIDAR um código de uso único (aqui) e (2) ENTREGÁ-LO. Hoje a entrega é manual
+// (tools/reset-code.mjs gera o código, grava só o hash e o operador o repassa). Um envio por e-mail futuro troca apenas a entrega.
+const RESET_MAX_ATTEMPTS = 5;
+const normalizeResetCode = c => String(c || '').toUpperCase().replace(/O/g, '0').replace(/[IL]/g, '1').replace(/[^0-9A-Z]/g, '');
+const resetCodeHash = (staffId, code) => sha256('tatame-reset:' + staffId + ':' + normalizeResetCode(code));
+const audit = (db, event, staffId, detail) => db.prepare('INSERT INTO audit_log (event, staff_id, detail) VALUES (?, ?, ?)').bind(event, staffId || null, detail || null);
+const RESET_BAD = 'Código inválido. Confira o código e o e-mail; se o erro continuar, peça um novo código.';
 
 // =====================================================================
 // Cálculo dos indicadores
@@ -562,6 +570,39 @@ async function route(req, env, url, ctx) {
     }
     await run(db, 'DELETE FROM login_attempts WHERE key = ?', pairKey);
     return json({ ok: true }, 200, { 'set-cookie': await createSession(db, s.id) });
+  }
+
+  if (path === '/api/reset' && method === 'POST') {
+    const b = await body();
+    const email = String(b.email || '').trim().toLowerCase(), code = normalizeResetCode(b.code);
+    const ip = req.headers.get('cf-connecting-ip') || 'local';
+    const pairKey = 'reset:email:' + email + '|ip:' + ip, ipKey = 'reset:ip:' + ip;
+    if (await rateLimited(db, [[pairKey, LOGIN_LIMITS.pair], [ipKey, LOGIN_LIMITS.ip]])) throw new HttpError(429, 'Muitas tentativas. Aguarde 15 minutos e tente de novo.');
+    const newPw = checkPassword(b.password);
+    if (b.password_confirm !== undefined && b.password_confirm !== newPw) bad('As senhas não conferem.');
+    const fail = async (staffId, why) => {
+      const st = [db.prepare('INSERT INTO login_attempts (key) VALUES (?)').bind(pairKey), db.prepare('INSERT INTO login_attempts (key) VALUES (?)').bind(ipKey),
+        db.prepare("DELETE FROM login_attempts WHERE at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 hour')")];
+      if (staffId) st.push(db.prepare('UPDATE password_resets SET attempts = attempts + 1 WHERE staff_id = ? AND used_at IS NULL').bind(staffId), audit(db, 'reset_failed', staffId, why));
+      await db.batch(st);
+    };
+    const s = await first(db, 'SELECT id FROM staff WHERE email = ? AND active = 1', email);
+    const pr = s ? await first(db, 'SELECT * FROM password_resets WHERE staff_id = ?', s.id) : null;
+    const given = await resetCodeHash(s ? s.id : 'none', code);
+    const match = !!pr && code.length >= 20 && safeEqual(given, pr.code_hash);
+    // Mensagem genérica enquanto o código não confere: não revela se o e-mail existe nem se há código pendente.
+    if (!match || pr.attempts >= RESET_MAX_ATTEMPTS) { await fail(s && pr ? s.id : null, match ? 'bloqueado por tentativas' : 'código incorreto'); throw new HttpError(400, RESET_BAD); }
+    if (pr.used_at) throw new HttpError(400, 'Este código já foi utilizado. Peça um novo código.');
+    if (Date.parse(pr.expires_at) <= Date.now()) throw new HttpError(400, 'Este código expirou. Peça um novo código.');
+    // Consumo atômico: só uma requisição consegue marcar o código como usado.
+    const claim = await run(db, "UPDATE password_resets SET used_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE staff_id = ? AND used_at IS NULL", s.id);
+    if (!claim.meta || claim.meta.changes !== 1) throw new HttpError(400, 'Este código já foi utilizado. Peça um novo código.');
+    const { hash, salt } = await hashPassword(newPw);
+    await db.batch([db.prepare('UPDATE staff SET pass_hash = ?, pass_salt = ? WHERE id = ?').bind(hash, salt, s.id),
+      db.prepare('DELETE FROM auth_sessions WHERE staff_id = ?').bind(s.id),
+      db.prepare('DELETE FROM login_attempts WHERE key = ? OR key = ?').bind(pairKey, 'email:' + email + '|ip:' + ip),
+      audit(db, 'reset_used', s.id, 'senha redefinida; sessões encerradas')]);
+    return json({ ok: true });
   }
 
   if (path === '/api/logout' && method === 'POST') {

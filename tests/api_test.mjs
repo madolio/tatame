@@ -130,4 +130,72 @@ const csv = await call('GET', '/api/export/alunos.csv');
 ok(typeof csv.body === 'string' && csv.body.includes('Ana Souza'), 'exporta CSV');
 ok(csv.body.includes('"\'=1+1";"\'@cmd"'), 'CSV neutraliza fórmulas (= e @ ganham apóstrofo)');
 ok(csvBefore.split('\r\n').slice(0, 2).every(l => csv.body.includes(l)), 'CSV sem valores especiais continua igual (cabeçalho e linha da Ana)');
+// ---------- recuperação de senha por código (tools/reset-code.mjs gera; o Worker valida) ----------
+{
+  const RC = await import('../tools/reset-code.mjs');
+  const orig = { log: console.log, warn: console.warn, error: console.error };
+  const mk = async (name, email) => { const s = (await call('POST', '/api/staff', { name, email, password: 'senhaantiga1', role: 'professor' }, { ck: adminCookie })); assert.equal(s.status, 201); return DB.raw.prepare('SELECT id FROM staff WHERE email = ?').get(email).id; };
+  const issue = (id, agoMs = 0) => { const code = RC.generateCode(); DB.raw.exec(RC.buildSql(id, code, new Date(Date.now() - agoMs))); return code; };
+  const reset = (email, code, password = 'senhanova123', ip = '203.0.113.10') => call('POST', '/api/reset', { email, code, password, password_confirm: password }, { ck: '', ip });
+  const A = await mk('Prof Rec A', 'reca@x.com'), B = await mk('Prof Rec B', 'recb@x.com');
+  const lg = await call('POST', '/api/login', { email: 'reca@x.com', password: 'senhaantiga1' }, { ck: '' }); const oldCk = cookie;
+  ok(lg.status === 200 && (await call('GET', '/api/me', null, { ck: oldCk })).status === 200, 'recuperação: sessão antiga da conta funciona antes do reset');
+
+  const code = issue(A);
+  ok(code.replace(/-/g, '').length === 26 && /^[0-9A-HJKMNP-TV-Z-]+$/.test(code), 'recuperação: código com 26 caracteres (130 bits) sem letras ambíguas');
+  const row = DB.raw.prepare('SELECT * FROM password_resets WHERE staff_id = ?').get(A);
+  ok(row.code_hash.length === 64 && !JSON.stringify(row).includes(code.replace(/-/g, '')), 'recuperação: o banco guarda só o hash do código');
+  const exp = Date.parse(row.expires_at) - Date.now();
+  ok(exp > 29 * 60000 && exp <= 30 * 60000, 'recuperação: validade de 30 minutos');
+
+  ok((await reset('reca@x.com', code, 'curta')).status === 400 && DB.raw.prepare('SELECT used_at FROM password_resets WHERE staff_id = ?').get(A).used_at === null, 'recuperação: senha curta é recusada sem gastar o código');
+  ok((await call('POST', '/api/reset', { email: 'reca@x.com', code, password: 'senhanova123', password_confirm: 'outra12345' }, { ck: '' })).status === 400 && DB.raw.prepare('SELECT used_at FROM password_resets WHERE staff_id = ?').get(A).used_at === null, 'recuperação: confirmação diferente é recusada sem gastar o código');
+
+  const wrong = await reset('reca@x.com', RC.generateCode(), 'senhanova123', '203.0.113.11');
+  const ghost = await reset('ninguem@x.com', RC.generateCode(), 'senhanova123', '203.0.113.12');
+  const nocode = await reset('recb@x.com', RC.generateCode(), 'senhanova123', '203.0.113.13');
+  ok(wrong.status === 400 && wrong.body.error === ghost.body.error && wrong.body.error === nocode.body.error, 'recuperação: código errado, e-mail inexistente e conta sem código recebem a mesma resposta');
+  const other = await reset('recb@x.com', code, 'senhanova123', '203.0.113.14');
+  ok(other.status === 400 && other.body.error === wrong.body.error, 'recuperação: código de outra conta não funciona');
+  ok((await call('POST', '/api/login', { email: 'recb@x.com', password: 'senhanova123' }, { ck: '' })).status === 401, 'recuperação: a outra conta não teve a senha trocada');
+
+  const typed = ' ' + code.toLowerCase().replace(/0/g, 'o').replace(/1/g, 'l').replace(/-/g, ' ') + ' ';
+  const good = await reset('RecA@x.com', typed, 'senhanova123', '203.0.113.15');
+  ok(good.status === 200 && good.body.ok === true && !good.body.token, 'recuperação: código válido redefine a senha (aceita minúsculas, espaços e letras trocadas)');
+  ok((await call('GET', '/api/me', null, { ck: oldCk })).status === 401, 'recuperação: sessões antigas foram encerradas');
+  ok((await call('POST', '/api/login', { email: 'reca@x.com', password: 'senhaantiga1' }, { ck: '', ip: '203.0.113.16' })).status === 401, 'recuperação: a senha anterior deixou de funcionar');
+  ok((await call('POST', '/api/login', { email: 'reca@x.com', password: 'senhanova123' }, { ck: '', ip: '203.0.113.16' })).status === 200, 'recuperação: a senha nova funciona no login');
+  const reuse = await reset('reca@x.com', code, 'outrasenha123', '203.0.113.17');
+  ok(reuse.status === 400 && /já foi utilizado/.test(reuse.body.error), 'recuperação: código já usado é recusado com mensagem clara');
+  ok((await call('POST', '/api/login', { email: 'reca@x.com', password: 'outrasenha123' }, { ck: '', ip: '203.0.113.18' })).status === 401, 'recuperação: código reutilizado não troca a senha');
+
+  const old = issue(B, 31 * 60000);
+  const late = await reset('recb@x.com', old, 'senhanova123', '203.0.113.19');
+  ok(late.status === 400 && /expirou/.test(late.body.error), 'recuperação: código com mais de 30 minutos expirou');
+  ok((await call('POST', '/api/login', { email: 'recb@x.com', password: 'senhaantiga1' }, { ck: '', ip: '203.0.113.20' })).status === 200, 'recuperação: código expirado não altera a senha');
+
+  const c2 = issue(B);
+  for (let i = 0; i < 5; i++) await reset('recb@x.com', RC.generateCode(), 'senhanova123', '198.51.100.' + (20 + i));
+  ok(DB.raw.prepare('SELECT attempts FROM password_resets WHERE staff_id = ?').get(B).attempts === 5, 'recuperação: erros contra o código ficam contados');
+  const locked = await reset('recb@x.com', c2, 'senhanova123', '198.51.100.40');
+  ok(locked.status === 400 && locked.body.error === wrong.body.error, 'recuperação: após 5 erros nem o código certo é aceito');
+  const c3 = issue(B);
+  ok((await reset('recb@x.com', c3, 'senhanova123', '198.51.100.41')).status === 200, 'recuperação: um código novo zera as tentativas e funciona');
+  let st429 = 0; for (let i = 0; i < 9; i++) st429 = (await reset('alvo@x.com', RC.generateCode(), 'senhanova123', '192.0.2.99')).status;
+  ok(st429 === 429, 'recuperação: muitas tentativas do mesmo IP recebem 429');
+
+  const ev = DB.raw.prepare('SELECT event, count(*) n FROM audit_log GROUP BY event').all().reduce((o, r) => (o[r.event] = r.n, o), {});
+  ok(ev.reset_issued >= 4 && ev.reset_used === 2 && ev.reset_failed >= 6, `recuperação: eventos registrados (${JSON.stringify(ev)})`);
+  const dump = JSON.stringify(['password_resets', 'audit_log', 'login_attempts', 'staff', 'auth_sessions', 'settings'].map(t => DB.raw.prepare(`SELECT * FROM ${t}`).all()));
+  const secrets = [code, c2, c3, old].flatMap(c => [c, c.replace(/-/g, '')]);
+  ok(secrets.every(s => !dump.includes(s)), 'recuperação: nenhum código aparece em texto puro no banco');
+  ok(!dump.includes('senhanova123') && !dump.includes('senhaantiga1'), 'recuperação: nenhuma senha aparece em texto puro no banco');
+  const cap = []; for (const k of ['log', 'warn', 'error']) console[k] = (...a) => cap.push(a.join(' '));
+  const c4 = issue(A); await reset('reca@x.com', c4, 'senhanova123', '203.0.113.50'); await reset('reca@x.com', RC.generateCode(), 'x12345678', '203.0.113.51');
+  Object.assign(console, orig);
+  ok(cap.every(l => !l.includes(c4) && !l.includes(c4.replace(/-/g, ''))), 'recuperação: nenhum código vai para os logs');
+  ok(!RC.validEmail("a'b@x.com") && RC.validEmail('a@x.com'), 'script: e-mail com aspas é recusado');
+  ok(!RC.buildSql(A, c4).includes(c4.replace(/-/g, '')) && !RC.buildSql(A, c4).includes(c4), 'script: o SQL gerado não contém o código');
+}
+
 console.log('\nTODOS OS TESTES DA API PASSARAM');
