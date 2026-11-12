@@ -66,24 +66,6 @@
       }
     },
     {
-      "id": "D6-media-sem-aulas-vazias",
-      "classe": "depende-de-modelo",
-      "regra": "D6",
-      "passe": "B",
-      "campos": [
-        "painel:kpis.avg_per_lesson_30d",
-        "painel:occupancy.avg",
-        "painel:heat.avg"
-      ],
-      "estado": "aguarda decisão do marcador de chamada (migração)",
-      "evidencia": "Em 17/06, presença média por aula nos últimos 30 dias: Worker 1,7, referência 1,9 (aulas sem presença saem do denominador). O modelo não distingue 'sem chamada' de 'chamada com zero presentes'; a referência usa 'nenhuma presença' como aproximação.",
-      "contagem": {
-        "manual@2026-06-17": 5,
-        "manual@2026-04-30": 5,
-        "gerado@2026-06-17": 3
-      }
-    },
-    {
       "id": "D7-media-semanal",
       "classe": "regra-aprovada",
       "regra": "D7",

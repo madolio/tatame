@@ -296,19 +296,23 @@ async function dashboard(db, C) {
   });
   const d30 = addDays(today, -30);
   const l30 = lessons.filter(l => l.date > d30);
+  // D6: só entra no denominador da média a aula com chamada realizada (marcador roll_called = 1, ou com presentes).
+  // Chamada feita com zero presentes conta como aula de presença zero; aula sem chamada (0) e histórico desconhecido (NULL) sem presentes ficam de fora.
+  const called = l => l.roll_called === 1 || l.n > 0;
+  const avgOf = ls => { const c = ls.filter(called).length; return c ? Math.round(ls.reduce((t, l) => t + l.n, 0) / c * 10) / 10 : 0; };
   const belts = BELTS.map(b => ({ belt: b, count: active.filter(s => s.belt === b).length })).filter(x => x.count);
   // Ocupação por horário fixo (últimas 8 semanas)
   const d56 = addDays(today, -56);
   const occupancy = core.classes.filter(c => c.active).map(c => {
     const ls = lessons.filter(l => l.class_id === c.id && l.date > d56);
-    return { class_id: c.id, lessons: ls.length, avg: ls.length ? Math.round(ls.reduce((t, l) => t + l.n, 0) / ls.length * 10) / 10 : 0 };
+    return { class_id: c.id, lessons: ls.length, avg: avgOf(ls) };
   });
   // Presença média por dia da semana e hora
   const heat = {};
   for (const l of lessons.filter(l => l.date > d56)) {
     const wd = new Date(l.date + 'T00:00:00Z').getUTCDay(), h = l.start_time.slice(0, 2);
-    const k = `${wd}-${h}`; heat[k] = heat[k] || { weekday: wd, hour: +h, lessons: 0, attendance: 0 };
-    heat[k].lessons++; heat[k].attendance += l.n;
+    const k = `${wd}-${h}`; heat[k] = heat[k] || { weekday: wd, hour: +h, lessons: 0, called: 0, attendance: 0 };
+    heat[k].lessons++; heat[k].attendance += l.n; if (called(l)) heat[k].called++;
   }
   const todayWd = new Date(today + 'T00:00:00Z').getUTCDay();
   const todays = core.classes.filter(c => c.active && c.weekday === todayWd).map(c => ({ ...c, lesson: lessons.find(l => l.class_id === c.id && l.date === today) || null }));
@@ -321,12 +325,12 @@ async function dashboard(db, C) {
       at_risk: active.filter(s => s.metrics.at_risk).length,
       ready: active.filter(s => s.metrics.ready).length,
       lessons_30d: l30.length,
-      avg_per_lesson_30d: l30.length ? Math.round(l30.reduce((t, l) => t + l.n, 0) / l30.length * 10) / 10 : 0,
+      avg_per_lesson_30d: avgOf(l30),
       attendance_this_week: weekly[weekly.length - 1].attendance,
       attendance_last_week: weekly[weekly.length - 2].attendance,
       attendance_last_week_same_period: core.att.filter(a => a.date >= addDays(ws, -7) && a.date <= addDays(today, -7)).length
     },
-    weekly, belts, occupancy, heat: Object.values(heat).map(h => ({ ...h, avg: Math.round(h.attendance / h.lessons * 10) / 10 })), todays,
+    weekly, belts, occupancy, heat: Object.values(heat).map(({ called: c, ...h }) => ({ ...h, avg: c ? Math.round(h.attendance / c * 10) / 10 : 0 })), todays,
     ready_list: active.filter(s => s.metrics.ready).map(s => s.id),
     near_list: active.filter(s => !s.metrics.ready && s.metrics.progress >= 75).sort((a, b) => b.metrics.progress - a.metrics.progress).slice(0, 8).map(s => s.id),
     risk_list: active.filter(s => s.metrics.at_risk).sort((a, b) => b.metrics.days_absent - a.metrics.days_absent).map(s => s.id)
@@ -438,16 +442,22 @@ async function saveLesson(db, staff, b, id) {
     const dup = await first(db, 'SELECT id FROM lessons WHERE class_id = ? AND date = ? AND id <> ?', o.class_id, o.date, id || '');
     if (dup) throw new HttpError(409, 'Já existe uma chamada desta turma neste dia.');
   }
+  // D6: marcador de chamada. Com presentes a chamada foi feita. Sem presentes: o valor informado (true = chamada feita, ninguém veio;
+  // false = sem chamada); se não informado, aula nova começa "sem chamada" (0) e aula existente mantém o estado (inclusive desconhecido, NULL).
+  const rollIn = b.roll_called === undefined || b.roll_called === null ? null : typeof b.roll_called === 'boolean' ? (b.roll_called ? 1 : 0) : bad('Chamada inválida.');
+  if (rollIn === 0 && studentIds.length) bad('Há alunos presentes: a chamada não pode ser marcada como não realizada.');
+  const prev = id ? await first(db, 'SELECT roll_called FROM lessons WHERE id = ?', id) : null;
+  const roll = studentIds.length ? 1 : rollIn !== null ? rollIn : id ? (prev ? prev.roll_called : null) : 0;
   const stmts = [];
   if (id) {
-    stmts.push(db.prepare('UPDATE lessons SET class_id=?, date=?, start_time=?, end_time=?, modality=?, title=?, notes=?, instructor_id=? WHERE id=?')
-      .bind(o.class_id, o.date, o.start_time, o.end_time, o.modality, o.title, o.notes, o.instructor_id, id));
+    stmts.push(db.prepare('UPDATE lessons SET class_id=?, date=?, start_time=?, end_time=?, modality=?, title=?, notes=?, instructor_id=?, roll_called=? WHERE id=?')
+      .bind(o.class_id, o.date, o.start_time, o.end_time, o.modality, o.title, o.notes, o.instructor_id, roll, id));
     stmts.push(db.prepare('DELETE FROM attendance WHERE lesson_id = ?').bind(id));
     stmts.push(db.prepare('DELETE FROM lesson_techniques WHERE lesson_id = ?').bind(id));
   } else {
     id = uuid();
-    stmts.push(db.prepare('INSERT INTO lessons (id, class_id, date, start_time, end_time, modality, title, notes, instructor_id, created_by) VALUES (?,?,?,?,?,?,?,?,?,?)')
-      .bind(id, o.class_id, o.date, o.start_time, o.end_time, o.modality, o.title, o.notes, o.instructor_id, staff.id));
+    stmts.push(db.prepare('INSERT INTO lessons (id, class_id, date, start_time, end_time, modality, title, notes, instructor_id, created_by, roll_called) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+      .bind(id, o.class_id, o.date, o.start_time, o.end_time, o.modality, o.title, o.notes, o.instructor_id, staff.id, roll));
   }
   for (const s of studentIds) stmts.push(db.prepare('INSERT INTO attendance (lesson_id, student_id) VALUES (?, ?)').bind(id, s));
   for (const t of techIds) stmts.push(db.prepare('INSERT INTO lesson_techniques (lesson_id, technique_id) VALUES (?, ?)').bind(id, t));

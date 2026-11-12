@@ -26,4 +26,26 @@ ok(!tables().includes('password_resets') && !tables().includes('audit_log'), 're
 ok(DB.raw.prepare('SELECT count(*) n FROM staff').get().n === 1, 'reversão preserva contas e demais dados');
 const fresh = makeD1(); fresh.load(root + 'db/schema.sql');
 ok(['password_resets', 'audit_log'].every(t => fresh.raw.prepare("SELECT name FROM sqlite_master WHERE name = ?").get(t)), 'schema.sql novo já inclui as tabelas');
+// ---------- Migração 002: marcador de chamada (lessons.roll_called) ----------
+console.log('\n-- 002 marcador de chamada --');
+const cols = () => DB.raw.prepare("PRAGMA table_info('lessons')").all().map(r => r.name);
+DB.load(root + 'db/migrations/002_marcador_de_chamada.down.sql'); // banco anterior = sem a coluna
+ok(!cols().includes('roll_called'), 'banco anterior não tem lessons.roll_called');
+DB.raw.exec("INSERT INTO students (id, name, start_date, belt_since, degree_since) VALUES ('a1', 'Aluno', '2026-01-01', '2026-01-01', '2026-01-01')");
+DB.raw.exec("INSERT INTO lessons (id, date, start_time, end_time) VALUES ('l-com', '2026-06-01', '19:00', '20:00'), ('l-sem', '2026-06-02', '19:00', '20:00')");
+DB.raw.exec("INSERT INTO attendance (lesson_id, student_id) VALUES ('l-com', 'a1')");
+DB.load(root + 'db/migrations/002_marcador_de_chamada.sql');
+ok(cols().includes('roll_called'), 'migração cria lessons.roll_called');
+const rc = id => DB.raw.prepare('SELECT roll_called r FROM lessons WHERE id = ?').get(id).r;
+ok(rc('l-com') === 1, 'backfill: aula com presença vira chamada feita (evidência confiável)');
+ok(rc('l-sem') === null, 'backfill: aula sem presença continua desconhecida (não é classificada como sem chamada)');
+let twice = false; try { DB.load(root + 'db/migrations/002_marcador_de_chamada.sql'); } catch { twice = true; }
+ok(twice, 'segunda execução é recusada pelo SQLite (aplicar uma vez só, como documentado)');
+ok(DB.raw.prepare('SELECT count(*) n FROM lessons').get().n === 2 && DB.raw.prepare('SELECT count(*) n FROM attendance').get().n === 1, 'migração não perde aulas nem presenças');
+let bad2 = false; try { DB.raw.exec("UPDATE lessons SET roll_called = 2 WHERE id = 'l-sem'"); } catch { bad2 = true; }
+ok(bad2, 'só aceita 0, 1 ou NULL');
+DB.load(root + 'db/migrations/002_marcador_de_chamada.down.sql');
+ok(!cols().includes('roll_called') && DB.raw.prepare('SELECT count(*) n FROM lessons').get().n === 2, 'reversão remove a coluna e preserva as aulas');
+ok(fresh.raw.prepare("PRAGMA table_info('lessons')").all().some(r => r.name === 'roll_called'), 'schema.sql novo já inclui a coluna');
+
 console.log('\nMIGRAÇÃO OK');

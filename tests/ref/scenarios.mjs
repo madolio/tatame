@@ -14,9 +14,11 @@ function addStudent(DB, o) {
   return s.id;
 }
 const addClass = (DB, o) => { const id = nid('cl'); DB.raw.prepare('INSERT INTO classes (id, name, weekday, start_time, end_time, active) VALUES (?,?,?,?,?,?)').run(id, o.name, o.weekday, o.start, o.end, o.active === 0 ? 0 : 1); return id; };
+// roll: marcador de chamada. Padrão imita um banco migrado: com presentes = 1; sem presentes = NULL (desconhecido).
 function addLesson(DB, o) {
   const id = nid('ls');
-  DB.raw.prepare('INSERT INTO lessons (id, class_id, date, start_time, end_time) VALUES (?,?,?,?,?)').run(id, o.class_id || null, o.date, o.start || '19:00', o.end || '20:00');
+  const roll = o.roll !== undefined ? o.roll : (o.students || []).length ? 1 : null;
+  DB.raw.prepare('INSERT INTO lessons (id, class_id, date, start_time, end_time, roll_called) VALUES (?,?,?,?,?,?)').run(id, o.class_id || null, o.date, o.start || '19:00', o.end || '20:00', roll);
   for (const s of o.students || []) DB.raw.prepare('INSERT INTO attendance (lesson_id, student_id) VALUES (?,?)').run(id, s);
   for (const t of o.techs || []) DB.raw.prepare('INSERT INTO lesson_techniques (lesson_id, technique_id) VALUES (?,?)').run(id, t);
   return id;
@@ -106,6 +108,10 @@ export async function buildManual(world) {
   addLesson(DB, { date: d(-2), start: '07:00', end: '08:00', students: [], techs: [30] });
   addLesson(DB, { date: d(-95), start: '07:00', end: '08:00', students: [], techs: [31] });
   addLesson(DB, { date: d(-4), start: '12:00', end: '12:45', students: [], techs: [] });
+  // D6: chamada feita com zero presentes (conta como aula de presença zero) e aula sem chamada explícita (fora da média)
+  addLesson(DB, { date: d(-3), start: '13:00', end: '13:45', students: [], techs: [], roll: 1 });
+  addLesson(DB, { date: d(-6), start: '13:00', end: '13:45', students: [], techs: [], roll: 0 });
+  addLesson(DB, { date: d(-9), start: '13:00', end: '13:45', students: [], techs: [], roll: 1 });
 
   // graduações pela API, na ordem
   const promote = async (name, body) => { const r = await api('POST', `/api/students/${S[name]}/promote`, body); if (r.status >= 300) throw new Error(`promover ${name}: ${JSON.stringify(r.body)}`); };
@@ -159,7 +165,8 @@ export async function buildGenerated(world, seed = 20260617) {
       const empty = rnd() < 0.06;
       const att = empty ? [] : students.filter(s2 => (s2.start <= d(o) || rnd() < 0.02) && (!s2.quitAt || d(o) < s2.quitAt) && rnd() < s2.p * (ci === 1 ? 1 : 0.5)).map(s2 => s2.id);
       const techs = [...new Set([...Array(ri(0, 3))].map(() => ri(1, 70)))];
-      addLesson(DB, { class_id: cls[ci], date: d(o), start: s, end: e, students: att, techs });
+      // aulas vazias: chamada feita sem presentes, sem chamada ou desconhecida (alternância fixa, sem consumir o gerador aleatório)
+      addLesson(DB, { class_id: cls[ci], date: d(o), start: s, end: e, students: att, techs, ...(empty ? { roll: [null, 1, 0][(-o) % 3] } : {}) });
     }
   }
 }

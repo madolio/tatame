@@ -2,7 +2,7 @@
 // Independente do Worker: não importa nada de web/. Lê linhas cruas do banco e devolve os mesmos indicadores.
 //
 // opts.legacy liga, regra por regra, o comportamento ATUAL do Worker no lugar da regra de referência:
-//   avg (D6), weekly (D7).
+//   weekly (D7).
 // Com todos ligados, a referência deve reproduzir o Worker; é assim que se prova que ela o entendeu
 // (passe A) antes de se ver onde a regra nova diverge (passe B).
 import { toDay, addDays, weekday, calendarMonths, ageYears, firstOfMonth, fromDay } from './dates.mjs';
@@ -22,7 +22,7 @@ const levelOf = (table, v) => { let i = 0; table.forEach(([min], k) => { if (v >
 const by = (rows, key) => { const m = new Map(); for (const r of rows) { const k = r[key]; if (!m.has(k)) m.set(k, []); m.get(k).push(r); } return m; };
 
 export function computeReference(data, today, opts = {}) {
-  const L = opts.legacy === 'all' ? { avg: 1, weekly: 1 } : (opts.legacy || {});
+  const L = opts.legacy === 'all' ? { weekly: 1 } : (opts.legacy || {});
   const T = toDay(today);
   const rules = Object.fromEntries(data.rules.map(r => [r.belt, r]));
   const lessonById = new Map(data.lessons.map(l => [l.id, l]));
@@ -119,9 +119,10 @@ export function computeReference(data, today, opts = {}) {
   const active = data.students.filter(s => s.status === 'ativo');
   const ws = T - ((weekday(today) + 6) % 7);
   const lessonsIn = (from, to) => data.lessons.filter(l => { const d = toDay(l.date); return d >= from && d <= to; });
-  const withCall = ls => ls.filter(l => (present.get(l.id) || 0) > 0);
+  // D6: chamada realizada = marcador 1 ou com presentes; marcador 0 (sem chamada) e NULL (desconhecido) sem presentes ficam fora do denominador
+  const withCall = ls => ls.filter(l => l.roll_called === 1 || (present.get(l.id) || 0) > 0);
   const presentSum = ls => ls.reduce((t, l) => t + (present.get(l.id) || 0), 0);
-  const avgOf = ls => { const base = L.avg ? ls : withCall(ls); return base.length ? r1(presentSum(ls), base.length) : 0; };
+  const avgOf = ls => { const base = withCall(ls); return base.length ? r1(presentSum(ls), base.length) : 0; };
   const weekly = [...Array(12)].map((_, i) => {
     const from = ws - 7 * (11 - i), ls = lessonsIn(from, from + 6);
     const ids = new Set(); for (const [sid, rows] of attByStudent) if (rows.some(x => x.day >= from && x.day <= from + 6)) ids.add(sid);

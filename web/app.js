@@ -569,7 +569,7 @@ VIEWS.aulas = () => {
       ${!lessonsCache ? '<div class="skeleton"></div>' : lessonsCache.length ? `<div class="agenda">${days.map(([d, arr]) => `<div class="agenda-day"><div class="agenda-date"><b>${pd(d).getDate()}</b><span>${WDS[pd(d).getDay()]}</span><span>${MONTHS[pd(d).getMonth()]}</span></div>
         <div class="list">${arr.map(l => `<button class="item lrow" data-act="lesson-open" data-id="${l.id}"><span class="slot-time"><b>${l.start_time}</b></span>
           <div class="grow"><b class="ellipsis" style="display:block">${esc(l.class_name || 'Aula avulsa')}${l.title ? `<span class="muted"> · ${esc(l.title)}</span>` : ''}</b><div class="muted xs">${l.technique_ids.length} técnica${l.technique_ids.length === 1 ? '' : 's'}${l.instructor_name ? ` · ${esc(l.instructor_name)}` : ''}</div></div>
-          <span class="l-count"><b class="num">${l.attendees}</b><span class="muted xs">aluno${l.attendees === 1 ? '' : 's'}</span></span></button>`).join('')}</div></div>`).join('')}</div>`
+          <span class="l-count"><b class="num">${l.attendees}</b><span class="muted xs">${!l.attendees && l.roll_called === 0 ? 'sem chamada' : `aluno${l.attendees === 1 ? '' : 's'}`}</span></span></button>`).join('')}</div></div>`).join('')}</div>`
         : '<div class="card empty"><b>Nenhuma aula registrada</b>Faça a chamada de cada aula: quem veio e quais técnicas foram passadas. Isso alimenta frequência, graduação e aprendizado.</div>'}`;
   } else {
     // Grade semanal: uma coluna por dia no desktop; no mobile, só os dias com aula, empilhados.
@@ -601,7 +601,7 @@ async function openLesson({ id, classId, date }) {
   if (id) { L = await busy(null, () => api('GET', '/api/lessons/' + id)); if (!L) return; }
   else {
     const c = classId ? clsById(classId) : null;
-    L = { id: null, class_id: c ? c.id : null, date: date || S.today, start_time: c ? c.start_time : '19:00', end_time: c ? c.end_time : '20:30', modality: c ? c.modality : 'gi', title: '', notes: '', student_ids: [], technique_ids: [] };
+    L = { id: null, class_id: c ? c.id : null, date: date || S.today, start_time: c ? c.start_time : '19:00', end_time: c ? c.end_time : '20:30', modality: c ? c.modality : 'gi', title: '', notes: '', roll_called: null, student_ids: [], technique_ids: [] };
   }
   S.ui.lesson = { ...L, student_ids: new Set(L.student_ids), technique_ids: new Set(L.technique_ids), q: '', tq: '' };
   renderLesson();
@@ -630,6 +630,7 @@ function renderLesson() {
       <label class="field full"><span>Tema da aula</span><input class="input" id="ls-title" maxlength="120" value="${esc(L.title || '')}" placeholder="Ex.: passagem de guarda aberta"></label>
     </div>
     <div class="section-title"><h2>Presença</h2><span class="tag accent" id="att-count">${L.student_ids.size} presente${L.student_ids.size === 1 ? '' : 's'}</span></div>
+    <label class="field full row" id="ls-roll-row" style="gap:8px;margin-bottom:8px;${L.student_ids.size ? 'display:none' : ''}"><input type="checkbox" id="ls-roll" ${L.roll_called === 1 ? 'checked' : ''}> <span style="margin:0">Chamada feita: ninguém compareceu${L.id && L.roll_called == null ? ' <span class="muted xs">(chamada ainda não registrada)</span>' : ''}</span></label>
     <input class="input" id="ls-q" placeholder="Buscar aluno" value="${esc(L.q)}" style="margin-bottom:8px">
     <div class="list" id="att-list">${pool.map(s => `<button class="att ${L.student_ids.has(s.id) ? 'on' : ''}" data-act="att-toggle" data-id="${s.id}" aria-pressed="${L.student_ids.has(s.id)}">
       <span class="box">${I('check', 15)}</span><div class="grow"><b class="small">${esc(s.name)}</b><div class="row" style="gap:6px;margin-top:3px">${belt(s.belt, s.degrees)}<span class="muted xs">${n1(s.metrics.weekly_avg)}/sem</span></div></div></button>`).join('') || '<div class="empty">Nenhum aluno ativo encontrado. Cadastre alunos primeiro.</div>'}</div>
@@ -643,6 +644,7 @@ function renderLesson() {
   </div></div>`;
   $('#lesson-screen').scrollTop = scroll;
   const bind = (sel, key) => { const el = $(sel); el.oninput = el.onchange = () => { L[key] = el.value; }; };
+  $('#ls-roll').onchange = e => { L.roll_called = e.target.checked ? 1 : 0; };
   bind('#ls-date', 'date'); bind('#ls-mod', 'modality'); bind('#ls-start', 'start_time'); bind('#ls-end', 'end_time'); bind('#ls-title', 'title'); bind('#ls-notes', 'notes');
   $('#ls-class').onchange = e => { L.class_id = e.target.value || null; const c = clsById(L.class_id); if (c) { L.start_time = c.start_time; L.end_time = c.end_time; L.modality = c.modality; } renderLesson(); };
   const live = (sel, key) => { const el = $(sel); el.oninput = () => { L[key] = el.value; const pos = el.selectionStart; renderLesson(); const n = $(sel); n.focus(); n.setSelectionRange(pos, pos); }; };
@@ -653,8 +655,8 @@ async function saveLesson(btn) {
   const L = S.ui.lesson;
   if (!L.date) return toast('Informe a data.', 'error');
   if (!L.start_time || !L.end_time || L.end_time <= L.start_time) return toast('Confira o horário de início e fim.', 'error');
-  if (!L.student_ids.size && !(await confirmBox('Salvar sem alunos?', 'Nenhum aluno foi marcado como presente.', 'Salvar', false))) return;
-  const b = { class_id: L.class_id, date: L.date, start_time: L.start_time, end_time: L.end_time, modality: L.modality, title: L.title, notes: L.notes, student_ids: [...L.student_ids], technique_ids: [...L.technique_ids] };
+  if (!L.student_ids.size && L.roll_called !== 1 && !(await confirmBox('Salvar sem chamada?', 'Nenhum aluno foi marcado como presente, então a aula fica sem chamada e não entra na média de presença. Se a chamada foi feita e ninguém veio, marque "Chamada feita: ninguém compareceu".', 'Salvar', false))) return;
+  const b = { class_id: L.class_id, date: L.date, start_time: L.start_time, end_time: L.end_time, modality: L.modality, title: L.title, notes: L.notes, roll_called: L.student_ids.size ? true : L.roll_called == null ? null : L.roll_called === 1, student_ids: [...L.student_ids], technique_ids: [...L.technique_ids] };
   const r = await busy(btn, () => L.id ? api('PUT', '/api/lessons/' + L.id, b) : api('POST', '/api/lessons', b), 'Chamada salva.');
   if (!r) return;
   $('#overlay').innerHTML = ''; S.ui.lesson = null; lessonsCache = null; detail = null;
@@ -856,7 +858,7 @@ const ACT = {
     const L = S.ui.lesson, id = el.dataset.id;
     if (L.student_ids.has(id)) L.student_ids.delete(id); else L.student_ids.add(id);
     const on = L.student_ids.has(id); el.classList.toggle('on', on); el.setAttribute('aria-pressed', on);
-    const n = L.student_ids.size; $('#att-count').textContent = `${n} presente${n === 1 ? '' : 's'}`;
+    const n = L.student_ids.size; $('#ls-roll-row').style.display = n ? 'none' : ''; $('#att-count').textContent = `${n} presente${n === 1 ? '' : 's'}`;
     $('[data-act=lesson-save]').innerHTML = `${I('check', 16)} Salvar chamada (${n})`;
   },
   'tech-toggle': el => { const L = S.ui.lesson, id = +el.dataset.id; if (L.technique_ids.has(id)) L.technique_ids.delete(id); else L.technique_ids.add(id); renderLesson(); },

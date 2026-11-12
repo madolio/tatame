@@ -7,7 +7,7 @@ Documento de referência para a paridade (`tests/parity.mjs`) e para o TCC. Cada
 - **Hoje** é a data no fuso `America/Sao_Paulo`. Todas as datas são `AAAA-MM-DD`; comparações são feitas por número de dias, nunca por hora.
 - **Janela de N dias**: dias `d` com `hoje − N < d ≤ hoje` (N dias contando hoje). Vale para 30, 84 e 90 dias.
 - **Semana** começa na segunda-feira.
-- **Aula** = registro em `lessons`. **Presença** = linha em `attendance`. **Aula sem chamada** = aula sem nenhuma presença (ver D6).
+- **Aula** = registro em `lessons`. **Presença** = linha em `attendance`. **Aula sem chamada** = `roll_called = 0` (ver D6); `roll_called = 1` com zero presentes é chamada feita.
 - **Arredondamento** para uma casa decimal: meio para cima.
 - **Aluno ativo** = `status = 'ativo'`. Trancado e inativo não entram em contagens do painel nem em risco de evasão.
 - **Dado inválido**: data de início no futuro; presença em aula anterior ao início do aluno é aceita e contada (a chamada é a evidência), mas não é erro.
@@ -98,22 +98,33 @@ Invariantes verificadas a partir da tabela de graduações, em ordem de registro
 | `new_this_month` — D5 [aprovada e aplicada] | alunos **ativos** com `início` dentro do mês de hoje (do dia 1 até hoje; início futuro é inválido e não conta) | (antes da D5: contava qualquer situação e início futuro; 7 contra 4 no cenário manual) |
 | `at_risk`, `ready` | alunos **ativos** com a respectiva marca | igual |
 | `lessons_30d` | aulas na janela de 30 dias | igual |
-| `avg_per_lesson_30d` — D6 [provisória] | presenças ÷ aulas **com chamada** (≥ 1 presença) na janela, 1 casa | divide por todas as aulas, inclusive vazias |
+| `avg_per_lesson_30d` — D6 [aprovada e aplicada] | presenças ÷ aulas **com chamada realizada** (`roll_called = 1` ou com presentes) na janela, 1 casa | (antes da D6: dividia por todas as aulas, inclusive vazias) |
 | `attendance_this_week` / `_last_week` | presenças com data na semana atual / anterior | igual |
 | `attendance_last_week_same_period` | presenças de `segunda anterior` até `hoje − 7` | igual |
 | `weekly` (12 semanas) | por semana: aulas, presenças e alunos distintos | igual |
 | `belts` | alunos ativos por faixa (só faixas com alunos) | igual |
-| `occupancy` | por turma ativa, aulas das últimas 8 semanas e presença média (D6) | média inclui vazias |
-| `heat` | por dia da semana e hora, aulas das últimas 8 semanas, presenças e média (D6) | média inclui vazias |
+| `occupancy` | por turma ativa, aulas das últimas 8 semanas e presença média (D6) | igual, com o denominador da D6 |
+| `heat` | por dia da semana e hora, aulas das últimas 8 semanas, presenças e média (D6) | igual, com o denominador da D6 |
 | listas `ready_list`, `risk_list`, `near_list` | ativos prontos; ativos em risco; ativos não prontos com `progress ≥ 75` (máx. 8) | igual |
 
-### Aula sem chamada × aula com zero presentes — D6 [provisória]
-O modelo de dados atual **não distingue** os dois casos: ambos são uma aula sem linhas em `attendance`. Para a referência, "sem chamada" é aproximado por "nenhuma presença registrada". Isso significa que uma aula realizada e que ficou de fato sem alunos é tratada como sem chamada. Para separar de verdade é preciso um marcador (por exemplo, `lessons.roll_called`, 0/1, com valor 1 quando a chamada é salva). Isso exige migração e mudança no Worker e fica **para decisão** (item 6 abaixo).
+### Aula sem chamada × aula com zero presentes — D6 [aprovada e aplicada]
+O marcador `lessons.roll_called` (migração `db/migrations/002_marcador_de_chamada.sql`) separa os três estados:
+
+| `roll_called` | Significado | Na média de presença |
+|---|---|---|
+| `1` | chamada feita (pode ter zero presentes) | entra; com zero presentes conta como aula de presença zero |
+| `0` | aula dada sem chamada | **não** entra no denominador |
+| `NULL` | desconhecido (histórico anterior à migração, sem evidência) | entra só se tiver presentes; sem presentes fica fora |
+
+- **Chamada realizada** (denominador das médias `avg_per_lesson_30d`, `occupancy.avg`, `heat.avg`) = `roll_called = 1` ou aula com ao menos uma presença. A contagem de aulas dadas (`lessons_30d`, `weekly.lessons`, `occupancy.lessons`, `heat.lessons`) continua incluindo todas as aulas.
+- **Novas aulas:** com presentes, `roll_called = 1` sempre. Sem presentes, o padrão é `0` (sem chamada); a chamada "feita, ninguém compareceu" é registrada enviando `roll_called: true` (na tela: caixa "Chamada feita: ninguém compareceu", que aparece quando ninguém está marcado). `roll_called: false` com alunos presentes é recusado. Ao editar uma aula sem informar o marcador, o estado existente é preservado (inclusive `NULL`).
+- **Backfill (apenas com evidência confiável):** a migração marca `1` nas aulas que já têm presença registrada. Aulas sem presença **não são classificadas**: podem ser "sem chamada" ou "chamada com zero presentes" e nada no banco permite saber. Elas ficam `NULL`; o instrutor pode registrar a chamada depois, editando a aula.
+- **Efeito do histórico desconhecido:** aulas `NULL` sem presentes ficam fora das médias (nem contam como zero, nem como "sem chamada" declarada). Médias de períodos antigos portanto não mudam por causa dessas aulas; só a evidência futura (marcador `0`/`1`) altera o denominador.
+- **Ordem de implantação:** aplicar a migração 002 **uma vez** (o SQLite não torna `ADD COLUMN` idempotente) antes de publicar o Worker que lê/grava a coluna. Reversão: `002_marcador_de_chamada.down.sql` (remove a coluna; aulas e presenças ficam). Fazer `wrangler d1 export` antes.
 
 ## 6. Decisões que ainda dependem de aprovação
 1. Adotar meses-calendário no lugar da aproximação por 30,44 dias (item 8).
-2. Criar o marcador de chamada para separar "sem chamada" de "chamada com zero presentes" (D6), com migração.
-3. Aplicar cada regra provisória ao Worker, uma por vez, com o teste de paridade como prova.
+2. Aplicar cada regra provisória ao Worker, uma por vez, com o teste de paridade como prova.
 
 ## 7. Paridade: como é verificada
 
@@ -131,7 +142,6 @@ O modelo de dados atual **não distingue** os dois casos: ambos são uma aula se
 
 | Regra | Efeito observado | Classe |
 |---|---|---|
-| D6 | Média por aula inclui aulas sem presença (1,7 contra 1,9); o modelo não separa "sem chamada" de "chamada com zero" | depende de modelo |
 | D7 | Média semanal dividida sempre por 12 (0,5 contra 2,0 para quem entrou há 2 semanas) | regra aprovada |
 | item 8 | 31/01 → 30/04, alvo de 3 meses: calendário cumpre, aproximação dá 2,97 | tolerância |
 

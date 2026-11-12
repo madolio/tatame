@@ -46,6 +46,6 @@ Sistema web para o professor acompanhar os alunos: frequência, chamada, técnic
 
 ## Testes
 - `tests/api_test.mjs`: 82 verificações da API (inclui recuperação de senha), rodando o Worker real sobre um emulador de D1 (`tests/d1shim.mjs`, node:sqlite).
-- `tests/permissions.mjs`: matriz de acesso (toda rota x anônimo, professor, administrador). `tests/migration.mjs`: aplica e reverte a migração 001 num banco no formato anterior.
+- `tests/permissions.mjs`: matriz de acesso (toda rota x anônimo, professor, administrador). `tests/migration.mjs`: aplica e reverte as migrações 001 (recuperação de senha) e 002 (marcador de chamada) num banco no formato anterior.
 - `tests/parity.mjs`: paridade dos cálculos. Compara o Worker, campo a campo, com uma implementação de referência independente (`tests/ref/`), com relógio fixo; divergências conhecidas em `tests/ref/divergencias.json`. Regras em `docs/regras-calculos.md`. `--detalhe` lista cada divergência.
 - `tests/e2e.mjs`: fluxo completo no navegador (Playwright), com 11 alunos e 12 semanas de aulas simuladas.

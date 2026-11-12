@@ -140,6 +140,33 @@ ok(d.student.belt === 'branca' && d.student.degrees === 4, 'desfazer graduação
   ok(await novos() === base + 1, 'D5: início em outro mês não conta');
   for (const s of [a, b, c, e]) await call('DELETE', '/api/students/' + s.id);
 }
+// D6: marcador de chamada (lessons.roll_called): sem chamada ≠ chamada com zero presentes
+{
+  const kpi = async () => (await call('GET', '/api/state')).body.dashboard.kpis;
+  const mk = async b => (await call('POST', '/api/lessons', { date: ago(1), start_time: '06:00', end_time: '07:00', ...b }));
+  const row = id => DB.raw.prepare('SELECT roll_called r FROM lessons WHERE id = ?').get(id).r;
+  const k0 = await kpi();
+  const semChamada = await mk({});
+  ok(semChamada.status === 201 && row(semChamada.body.id) === 0, 'D6: aula nova sem presentes e sem aviso começa como "sem chamada" (0)');
+  const k1 = await kpi();
+  ok(k1.avg_per_lesson_30d === k0.avg_per_lesson_30d && k1.lessons_30d === k0.lessons_30d + 1, 'D6: aula sem chamada conta como aula dada, mas não entra na média de presença');
+  const zero = await mk({ roll_called: true });
+  ok(zero.status === 201 && row(zero.body.id) === 1, 'D6: é possível registrar chamada feita com zero presentes');
+  const k2 = await kpi();
+  ok(k2.avg_per_lesson_30d < k1.avg_per_lesson_30d, 'D6: chamada com zero presentes entra na média como aula de presença zero');
+  const comAluno = await mk({ student_ids: [s1.id] });
+  ok(row(comAluno.body.id) === 1, 'D6: aula com presentes é sempre chamada feita');
+  ok((await mk({ student_ids: [s1.id], roll_called: false })).status === 400, 'D6: não aceita "sem chamada" com alunos presentes');
+  ok((await mk({ roll_called: 'talvez' })).status === 400, 'D6: valor inválido do marcador é recusado');
+  // histórico desconhecido (NULL) permanece desconhecido ao editar sem informar o marcador
+  DB.raw.prepare('UPDATE lessons SET roll_called = NULL WHERE id = ?').run(semChamada.body.id);
+  const ed = await call('PUT', '/api/lessons/' + semChamada.body.id, { date: ago(1), start_time: '06:00', end_time: '07:00', title: 'Ajuste de tema' });
+  ok(ed.status === 200 && row(semChamada.body.id) === null, 'D6: editar uma aula de histórico desconhecido não a classifica sozinho');
+  const ed2 = await call('PUT', '/api/lessons/' + semChamada.body.id, { date: ago(1), start_time: '06:00', end_time: '07:00', roll_called: true });
+  ok(ed2.status === 200 && row(semChamada.body.id) === 1, 'D6: o instrutor pode registrar a chamada depois');
+  ok((await call('GET', '/api/lessons/' + zero.body.id)).body.roll_called === 1, 'D6: a API devolve o marcador');
+  for (const l of [semChamada, zero, comAluno]) await call('DELETE', '/api/lessons/' + l.body.id);
+}
 // D1: sem data de nascimento não se presume idade nem trilha (infantil/adulta)
 {
   const sn = (await call('POST', '/api/students', { name: 'Sem Nascimento', start_date: ago(900), belt: 'branca', degrees: 4, belt_since: ago(800), degree_since: ago(300), imported_classes_belt: 200 })).body.student;

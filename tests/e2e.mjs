@@ -115,6 +115,13 @@ await step('chamada da aula de hoje', async () => {
   const opt = await page.$eval('#ls-class', s => s.options[s.selectedIndex].text);
   if (/07:00/.test(opt)) { await page.click(`#att-list .att >> nth=0`); await clear(); await page.click('[data-act=lesson-save]'); assert.match(await toastText(), /Já existe uma chamada/); }
   await page.click('[data-act=lesson-close]');
+  // D6: chamada feita sem presentes (marcador roll_called) — a caixa só aparece enquanto ninguém está marcado
+  await page.click('text=Nova chamada'); await page.waitForSelector('#lesson-screen');
+  assert.ok(await page.isVisible('#ls-roll-row'), 'caixa de chamada sem presentes visível com ninguém marcado');
+  await shot('03b-chamada-sem-presentes');
+  await page.click('#att-list .att >> nth=0'); assert.ok(!(await page.isVisible('#ls-roll-row')), 'caixa some quando há presentes');
+  await page.click('#att-list .att >> nth=0'); assert.ok(await page.isVisible('#ls-roll-row'));
+  await page.check('#ls-roll'); await clear(); await page.click('[data-act=lesson-save]'); assert.match(await toastText(), /Chamada salva/);
 });
 
 await step('ficha do aluno e avaliação de técnicas', async () => {

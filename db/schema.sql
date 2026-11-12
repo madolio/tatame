@@ -111,6 +111,7 @@ CREATE TABLE IF NOT EXISTS lessons (
   instructor_id TEXT REFERENCES staff (id) ON DELETE SET NULL,
   created_by TEXT REFERENCES staff (id) ON DELETE SET NULL,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  roll_called INTEGER CHECK (roll_called IN (0, 1)), -- 1 chamada feita, 0 sem chamada, NULL desconhecido (migração 002)
   CHECK (end_time > start_time)
 );
 CREATE INDEX IF NOT EXISTS lessons_date ON lessons (date DESC, start_time);
