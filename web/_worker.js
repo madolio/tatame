@@ -589,13 +589,30 @@ async function route(req, env, url, ctx) {
     const name = str(b.name, { min: 2, max: 80, field: 'Seu nome', required: true });
     const email = checkEmail(b.email), pw = checkPassword(b.password);
     const { hash, salt } = await hashPassword(pw);
+    const belt = oneOf(b.belt, BELTS, 'Faixa', null);
     const id = uuid();
-    await db.batch([
-      db.prepare('INSERT INTO staff (id, name, email, pass_hash, pass_salt, role, belt) VALUES (?,?,?,?,?,?,?)').bind(id, name, email, hash, salt, 'admin', oneOf(b.belt, BELTS, 'Faixa', null)),
-      db.prepare("INSERT INTO settings (key, value) VALUES ('academy_name', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").bind(academy),
-      db.prepare("INSERT INTO settings (key, value) VALUES ('setup_done', '1') ON CONFLICT (key) DO UPDATE SET value = '1'"),
-      db.prepare("DELETE FROM settings WHERE key IN ('setup_token', ?, ?)").bind(SETUP_HASH_KEY, SETUP_EXP_KEY)
+    // Atomicidade: as verificações acima são só para responder cedo. A decisão vale DENTRO do batch (uma transação no D1):
+    // o administrador só é inserido se, naquele instante, não há ninguém na equipe E o hash do código ainda está lá e não
+    // venceu. Os demais comandos só agem se esse administrador existe. Duas requisições simultâneas: a segunda encontra a
+    // equipe já criada (ou o código já consumido) e não insere nada. Se qualquer comando falhar, nada é gravado (rollback):
+    // o código continua válido e não fica administrador sem academia.
+    const nowIso = new Date().toISOString();
+    const created = 'EXISTS (SELECT 1 FROM staff WHERE id = ?)';
+    const res = await db.batch([
+      db.prepare(`INSERT INTO staff (id, name, email, pass_hash, pass_salt, role, belt) SELECT ?, ?, ?, ?, ?, 'admin', ?
+        WHERE NOT EXISTS (SELECT 1 FROM staff)
+          AND EXISTS (SELECT 1 FROM settings WHERE key = ? AND value = ?)
+          AND EXISTS (SELECT 1 FROM settings WHERE key = ? AND value > ?)`).bind(id, name, email, hash, salt, belt, SETUP_HASH_KEY, given, SETUP_EXP_KEY, nowIso),
+      db.prepare(`INSERT INTO settings (key, value) SELECT 'academy_name', ? WHERE ${created} ON CONFLICT (key) DO UPDATE SET value = excluded.value`).bind(academy, id),
+      db.prepare(`INSERT INTO settings (key, value) SELECT 'setup_done', '1' WHERE ${created} ON CONFLICT (key) DO UPDATE SET value = '1'`).bind(id),
+      db.prepare(`DELETE FROM settings WHERE key IN ('setup_token', ?, ?) AND ${created}`).bind(SETUP_HASH_KEY, SETUP_EXP_KEY, id)
     ]);
+    if (res?.[0]?.meta?.changes !== 1) {
+      // Outra requisição concluiu antes (ou o código foi trocado/consumido/venceu entre a conferência e o batch).
+      const n2 = await first(db, 'SELECT count(*) n FROM staff');
+      if (n2.n > 0) throw new HttpError(409, 'A academia já foi configurada.');
+      throw new HttpError(403, SETUP_DENIED);
+    }
     return json({ ok: true }, 201, { 'set-cookie': await createSession(db, id) });
   }
 

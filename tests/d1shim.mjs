@@ -12,7 +12,8 @@ export function makeD1(file = ':memory:') {
     async all() { const rows = this._exec().all(...this.params).map(r => ({ ...r })); return { results: rows, success: true, meta: {} }; }
     async first(col) { const r = this._exec().get(...this.params); if (!r) return null; return col ? r[col] : { ...r }; }
     async run() { const r = this._exec().run(...this.params); return { success: true, meta: { last_row_id: Number(r.lastInsertRowid), changes: r.changes } }; }
-    _runSync() { const s = this._exec(); return /^\s*(select|with)/i.test(this.sql) ? { results: s.all(...this.params) } : s.run(...this.params); }
+    // Mesmo formato do D1: cada item do batch é um D1Result ({ results, success, meta: { changes, last_row_id } }).
+    _runSync() { const s = this._exec(); if (/^\s*(select|with)/i.test(this.sql)) return { results: s.all(...this.params), success: true, meta: {} }; const r = s.run(...this.params); return { results: [], success: true, meta: { changes: r.changes, last_row_id: Number(r.lastInsertRowid) } }; }
   }
   return {
     raw: db,
