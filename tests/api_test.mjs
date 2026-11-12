@@ -109,6 +109,21 @@ ok(d.student.belt === 'branca' && d.student.degrees === 4, 'desfazer graduação
   ok(undo.body.student.metrics.experience.score === 300, 'D3: desfazer a graduação não duplica as aulas importadas');
   await call('DELETE', '/api/students/' + im.id);
 }
+// D4/D4b: início no futuro é dado inválido; aluno recém-cadastrado tem 14 dias de carência
+{
+  ok((await call('POST', '/api/students', { name: 'Futuro API', start_date: ago(-5) })).status === 400, 'D4: a API recusa início no futuro');
+  const mkS = async (name, start) => (await call('POST', '/api/students', { name, start_date: start })).body.student;
+  const met = async s => (await call('GET', '/api/students/' + s.id)).body.student.metrics;
+  const fut = await mkS('Futuro Banco', ago(0));
+  DB.raw.prepare('UPDATE students SET start_date = ? WHERE id = ?').run(ago(-10), fut.id);
+  let m = await met(fut);
+  ok(m.days_absent === null && m.at_risk === false && m.data_issues.includes('inicio_futuro'), 'D4: início no futuro (vindo do banco) não gera ausência negativa nem risco, e é sinalizado');
+  const n13 = await mkS('Novo 13', ago(13)), n14 = await mkS('Novo 14', ago(14)), n0 = await mkS('Novo hoje', ago(0));
+  ok((await met(n0)).days_absent === 0 && !(await met(n0)).at_risk, 'D4b: aluno que começa hoje não está em risco');
+  ok(!(await met(n13)).at_risk && (await met(n13)).days_absent === 13, 'D4b: 13 dias sem presença ainda é carência');
+  ok((await met(n14)).at_risk && (await met(n14)).days_absent === 14, 'D4b: com 14 dias sem presença entra em risco');
+  for (const s of [fut, n13, n14, n0]) await call('DELETE', '/api/students/' + s.id);
+}
 // D1: sem data de nascimento não se presume idade nem trilha (infantil/adulta)
 {
   const sn = (await call('POST', '/api/students', { name: 'Sem Nascimento', start_date: ago(900), belt: 'branca', degrees: 4, belt_since: ago(800), degree_since: ago(300), imported_classes_belt: 200 })).body.student;

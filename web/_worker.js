@@ -246,10 +246,13 @@ function studentMetrics(st, core, today, attByStudent, skillsByStudent, lessonTe
   }
   const progress = crit.length ? Math.round(crit.reduce((t, c) => t + Math.min(1, c.target > 0 ? c.current / c.target : 1), 0) / crit.length * 100) : 0;
   const ready = !!next && crit.length > 0 && crit.every(c => c.met);
-  const daysAbsent = last ? daysBetween(last, today) : daysBetween(st.start_date, today);
+  // D4: início no futuro é dado inválido (a API recusa, mas o banco pode ter vindo de importação): sem ausência calculável, nunca negativa.
+  // D4b: sem nenhuma presença a ausência conta desde o início do cadastro, então o aluno novo só entra em risco após 14 dias.
+  const startFuture = st.start_date > today;
+  const daysAbsent = last ? Math.max(0, daysBetween(last, today)) : startFuture ? null : daysBetween(st.start_date, today);
   return {
-    age, needs_profile: !st.birth_date, data_issues: st.birth_date ? [] : ['sem_nascimento'], classes_total: total, last_attendance: last, days_absent: daysAbsent,
-    at_risk: st.status === 'ativo' && daysAbsent >= 14,
+    age, needs_profile: !st.birth_date, data_issues: [...(st.birth_date ? [] : ['sem_nascimento']), ...(startFuture ? ['inicio_futuro'] : [])], classes_total: total, last_attendance: last, days_absent: daysAbsent,
+    at_risk: st.status === 'ativo' && daysAbsent !== null && daysAbsent >= 14,
     classes_last_30d: last30, weekly_avg: Math.round(weekly * 10) / 10, mat_hours: Math.round(hours * 10) / 10,
     classes_since_degree: sinceDegree, classes_since_belt: sinceBelt,
     months_in_belt: Math.round(monthsBetween(st.belt_since, today) * 10) / 10,

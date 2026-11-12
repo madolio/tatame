@@ -26,13 +26,13 @@ Documento de referência para a paridade (`tests/parity.mjs`) e para o TCC. Cada
 `presenças na janela de 84 dias ÷ semanas`, onde `semanas = min(12, máx(1, ⌈(dias desde o início + 1) / 7⌉))`. O denominador cresce com o tempo de casa até 12 e nunca é menor que 1 (sem divisão por zero e sem inflar a média de quem entrou ontem).
 **Atual:** divide sempre por 12. Quem entrou há 2 semanas com 6 aulas aparece com 0,5 por semana (a média real é 3).
 
-### Ausência e risco de evasão (`days_absent`, `at_risk`) — D4 [provisória]
+### Ausência e risco de evasão (`days_absent`, `at_risk`) — D4 e D4b [aprovadas e aplicadas]
 - Com presença: `days_absent = hoje − última presença`.
 - Sem presença: `days_absent = hoje − início` (dias desde o cadastro). **Carência:** só é "em risco" a partir de 14 dias; aluno recém-cadastrado não é classificado como em risco.
 - `at_risk` = aluno **ativo** e `days_absent ≥ 14`.
 - **Início no futuro é dado inválido:** sem presença, `days_absent = null` e `at_risk = false`; nunca se calcula valor negativo. O aluno é sinalizado em `data_issues` (`inicio_futuro`).
-**Atual:** início no futuro produz `days_absent` negativo (ex.: −10). O restante coincide.
-**Pendente de confirmação (D4b):** a regra "14 dias de carência desde o cadastro" é a leitura que fiz de "não classificar automaticamente recém-cadastrados como em risco". Ela coincide com o comportamento atual.
+**Aplicação:** a API já recusa data de início futura ao cadastrar; o tratamento no cálculo protege contra dados que cheguem por outro caminho (importação, banco). Também não se calcula ausência negativa se uma presença estiver datada no futuro (`days_absent` mínimo 0). Antes da D4 o Worker mostrava `days_absent = −10`.
+**D4b (confirmada):** carência de 14 dias após o início do cadastro para quem não tem nenhuma presença.
 
 ## 2. Experiência — D3 [aprovada e aplicada]
 
@@ -113,9 +113,7 @@ O modelo de dados atual **não distingue** os dois casos: ambos são uma aula se
 ## 6. Decisões que ainda dependem de aprovação
 1. Adotar meses-calendário no lugar da aproximação por 30,44 dias (item 8).
 2. Criar o marcador de chamada para separar "sem chamada" de "chamada com zero presentes" (D6), com migração.
-3. D4b: confirmar a carência de 14 dias para alunos sem presença.
-4. D3: confirmar que a experiência total deve somar `from_imported_belt` das graduações de faixa (e tratar a edição administrativa de `imported_classes_belt`).
-5. Aplicar cada regra provisória ao Worker, uma por vez, com o teste de paridade como prova.
+3. Aplicar cada regra provisória ao Worker, uma por vez, com o teste de paridade como prova.
 
 ## 7. Paridade: como é verificada
 
@@ -133,12 +131,10 @@ O modelo de dados atual **não distingue** os dois casos: ambos são uma aula se
 
 | Regra | Efeito observado | Classe |
 |---|---|---|
-| D4 | Início no futuro: `days_absent = −10` | regra aprovada |
 | D5 | `new_this_month` conta inativos e início futuro (7 contra 4) | regra aprovada |
 | D6 | Média por aula inclui aulas sem presença (1,7 contra 1,9); o modelo não separa "sem chamada" de "chamada com zero" | depende de modelo |
 | D7 | Média semanal dividida sempre por 12 (0,5 contra 2,0 para quem entrou há 2 semanas) | regra aprovada |
 | item 8 | 31/01 → 30/04, alvo de 3 meses: calendário cumpre, aproximação dá 2,97 | tolerância |
-| D4 | Sinalização `data_issues.inicio_futuro` ainda não existe no Worker (`needs_profile` e `sem_nascimento` já existem desde a D1) | campo novo |
 
 Sem divergência: janelas de 30, 84 e 90 dias, última aula, contagens por faixa e por semana, ocupação por turma, mapa de calor (contagens), técnicas, currículo e aprendizado, critérios de graduação, desfazer graduação.
 

@@ -2,7 +2,7 @@
 // Independente do Worker: não importa nada de web/. Lê linhas cruas do banco e devolve os mesmos indicadores.
 //
 // opts.legacy liga, regra por regra, o comportamento ATUAL do Worker no lugar da regra de referência:
-//   future (D4), newMonth (D5), avg (D6), weekly (D7).
+//   newMonth (D5), avg (D6), weekly (D7).
 // Com todos ligados, a referência deve reproduzir o Worker; é assim que se prova que ela o entendeu
 // (passe A) antes de se ver onde a regra nova diverge (passe B).
 import { toDay, addDays, weekday, calendarMonths, ageYears, firstOfMonth, fromDay } from './dates.mjs';
@@ -22,7 +22,7 @@ const levelOf = (table, v) => { let i = 0; table.forEach(([min], k) => { if (v >
 const by = (rows, key) => { const m = new Map(); for (const r of rows) { const k = r[key]; if (!m.has(k)) m.set(k, []); m.get(k).push(r); } return m; };
 
 export function computeReference(data, today, opts = {}) {
-  const L = opts.legacy === 'all' ? { future: 1, newMonth: 1, avg: 1, weekly: 1 } : (opts.legacy || {});
+  const L = opts.legacy === 'all' ? { newMonth: 1, avg: 1, weekly: 1 } : (opts.legacy || {});
   const T = toDay(today);
   const rules = Object.fromEntries(data.rules.map(r => [r.belt, r]));
   const lessonById = new Map(data.lessons.map(l => [l.id, l]));
@@ -53,8 +53,8 @@ export function computeReference(data, today, opts = {}) {
     const weeks = L.weekly ? 12 : Math.min(12, Math.max(1, Math.ceil((Math.max(0, T - start) + 1) / 7)));
     // ausência (D4)
     let daysAbsent;
-    if (last) daysAbsent = T - toDay(last);
-    else if (startFuture && !L.future) daysAbsent = null;
+    if (last) daysAbsent = Math.max(0, T - toDay(last));
+    else if (startFuture) daysAbsent = null;
     else daysAbsent = T - start;
     const atRisk = st.status === 'ativo' && daysAbsent !== null && daysAbsent >= 14;
     // experiência (D3)
@@ -100,7 +100,7 @@ export function computeReference(data, today, opts = {}) {
     const ready = !!next && crit.length > 0 && crit.every(c => c.met);
     const issues = [];
     if (!st.birth_date) issues.push('sem_nascimento');
-    if (startFuture && !L.future) issues.push('inicio_futuro');
+    if (startFuture) issues.push('inicio_futuro');
     students[st.id] = {
       name: st.name, status: st.status, age, classes_total: total, last_attendance: last, days_absent: daysAbsent, at_risk: atRisk,
       classes_last_30d: rows.filter(r2 => within(30, r2)).length, weekly_avg: r1(num84, weeks), mat_hours: r1(rows.reduce((t, x) => t + x.mins, 0), 60),
