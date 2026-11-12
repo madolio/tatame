@@ -6,8 +6,8 @@ const DB = makeD1();
 DB.load(fileURLToPath(new URL('../db/schema.sql', import.meta.url))); DB.load(fileURLToPath(new URL('../db/seed_tecnicas.sql', import.meta.url)));
 const env = { DB, ASSETS: { fetch: () => new Response('static') } };
 let cookie = '';
-const call = async (method, path, body, { csrf = true, ck = cookie } = {}) => {
-  const h = { 'content-type': 'application/json' }; if (csrf) h['x-tatame'] = '1'; if (ck) h.cookie = ck;
+const call = async (method, path, body, { csrf = true, ck = cookie, ip } = {}) => {
+  const h = { 'content-type': 'application/json' }; if (csrf) h['x-tatame'] = '1'; if (ck) h.cookie = ck; if (ip) h['cf-connecting-ip'] = ip;
   const r = await W.fetch(new Request('https://t.test' + path, { method, headers: h, body: body ? JSON.stringify(body) : undefined }), env);
   const sc = r.headers.get('set-cookie'); if (sc) cookie = sc.split(';')[0];
   const ct = r.headers.get('content-type') || '';
@@ -86,8 +86,18 @@ ok((await call('POST', '/api/login', { email: 'p2@x.com', password: 'outrasenha2
 ok((await call('DELETE', '/api/students/' + s2.id)).status === 403, 'professor não exclui aluno');
 ok((await call('PUT', '/api/rules', { rules: [] })).status === 403, 'professor não altera critérios');
 ok((await call('GET', '/api/state')).body.staff.every(s => !s.email), 'professor não vê e-mails da equipe');
-for (let i = 0; i < 9; i++) await call('POST', '/api/login', { email: 'p2@x.com', password: 'chute' + i });
-ok((await call('POST', '/api/login', { email: 'p2@x.com', password: 'outrasenha2' })).status === 429, 'limite de tentativas');
+// limite de tentativas: por (e-mail, IP). Um estranho errando de outro IP não bloqueia o dono da conta.
+const profCookie = cookie;
+for (let i = 0; i < 9; i++) await call('POST', '/api/login', { email: 'p2@x.com', password: 'chute' + i }, { ip: '203.0.113.9' });
+ok((await call('POST', '/api/login', { email: 'p2@x.com', password: 'outrasenha2' }, { ip: '203.0.113.9' })).status === 429, 'limite de tentativas: 8 erros do mesmo IP bloqueiam esse IP');
+ok((await call('POST', '/api/login', { email: 'p2@x.com', password: 'outrasenha2' }, { ip: '198.51.100.7' })).status === 200, 'dono da conta entra de outro IP mesmo com o e-mail sob ataque');
+ok(DB.raw.prepare("SELECT count(*) n FROM login_attempts WHERE key = 'email:p2@x.com|ip:198.51.100.7'").get().n === 0, 'login certo limpa as tentativas do par e-mail+IP');
+// enumeração por tempo: e-mail inexistente tem de custar o mesmo que senha errada em conta existente
+const med = async (email) => { const a = []; for (let i = 0; i < 12; i++) { const t = performance.now(); await call('POST', '/api/login', { email, password: 'senhaerrada' + i }, { ip: '192.0.2.' + i }); a.push(performance.now() - t); } a.sort((x, y) => x - y); return a[6]; };
+const tExiste = await med('p2@x.com'), tNao = await med('ninguem@x.com');
+ok(tNao > tExiste * 0.5 && tNao < tExiste * 2, `tempo de login não revela se o e-mail existe (existe ${tExiste.toFixed(1)} ms, não existe ${tNao.toFixed(1)} ms)`);
+ok(DB.raw.prepare("SELECT count(*) n FROM login_attempts WHERE at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 hour')").get().n === 0, 'tentativas antigas são apagadas');
+cookie = profCookie;
 await call('POST', '/api/logout'); ok((await call('GET', '/api/state')).status === 401, 'logout encerra sessão');
 cookie = adminCookie;
 const st = (await call('GET', '/api/state')).body;

@@ -124,13 +124,18 @@ async function currentStaff(req, db) {
     WHERE a.token_hash = ? AND a.expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now') AND s.active = 1`, await sha256(token));
 }
 
-async function rateLimited(db, keys) {
-  for (const k of keys) {
+// Limite de tentativas: por (e-mail, IP) para quem erra a própria senha, e por IP para quem varre vários e-mails.
+// A chave não é só o e-mail de propósito: senão um estranho bloquearia o dono da conta a partir de outro lugar.
+const LOGIN_LIMITS = { pair: 8, ip: 30 };
+async function rateLimited(db, pairs) {
+  for (const [k, max] of pairs) {
     const r = await first(db, "SELECT count(*) n FROM login_attempts WHERE key = ? AND at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-15 minutes')", k);
-    if (r.n >= 8) return true;
+    if (r.n >= max) return true;
   }
   return false;
 }
+// Sal fixo para conferir uma senha contra uma conta que não existe: o tempo de resposta fica igual ao de uma conta real.
+const GHOST_SALT = 'dGF0YW1lLWdob3N0LXNhbHQ=';
 
 // =====================================================================
 // Cálculo dos indicadores
@@ -524,14 +529,20 @@ async function route(req, env, url) {
     const b = await body();
     const email = String(b.email || '').trim().toLowerCase(), pw = String(b.password || '');
     const ip = req.headers.get('cf-connecting-ip') || 'local';
-    if (await rateLimited(db, ['email:' + email, 'ip:' + ip])) throw new HttpError(429, 'Muitas tentativas. Aguarde 15 minutos e tente de novo.');
+    const pairKey = 'email:' + email + '|ip:' + ip, ipKey = 'ip:' + ip;
+    if (await rateLimited(db, [[pairKey, LOGIN_LIMITS.pair], [ipKey, LOGIN_LIMITS.ip]])) throw new HttpError(429, 'Muitas tentativas. Aguarde 15 minutos e tente de novo.');
     const s = await first(db, 'SELECT * FROM staff WHERE email = ? AND active = 1', email);
-    const ok = s && safeEqual((await hashPassword(pw, s.pass_salt)).hash, s.pass_hash);
+    // Sempre calcula o hash (contra o sal real ou o fantasma), para a resposta não revelar se o e-mail existe.
+    const computed = (await hashPassword(pw, s ? s.pass_salt : GHOST_SALT)).hash;
+    const ok = !!s && safeEqual(computed, s.pass_hash);
     if (!ok) {
-      await db.batch([db.prepare('INSERT INTO login_attempts (key) VALUES (?)').bind('email:' + email), db.prepare('INSERT INTO login_attempts (key) VALUES (?)').bind('ip:' + ip)]);
+      await db.batch([
+        db.prepare('INSERT INTO login_attempts (key) VALUES (?)').bind(pairKey), db.prepare('INSERT INTO login_attempts (key) VALUES (?)').bind(ipKey),
+        db.prepare("DELETE FROM login_attempts WHERE at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 hour')")
+      ]);
       throw new HttpError(401, 'E-mail ou senha incorretos.');
     }
-    await run(db, 'DELETE FROM login_attempts WHERE key = ?', 'email:' + email);
+    await run(db, 'DELETE FROM login_attempts WHERE key = ?', pairKey);
     return json({ ok: true }, 200, { 'set-cookie': await createSession(db, s.id) });
   }
 
