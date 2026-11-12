@@ -2,7 +2,7 @@
 // Independente do Worker: não importa nada de web/. Lê linhas cruas do banco e devolve os mesmos indicadores.
 //
 // opts.legacy liga, regra por regra, o comportamento ATUAL do Worker no lugar da regra de referência:
-//   experience (D3), future (D4), newMonth (D5), avg (D6), weekly (D7).
+//   future (D4), newMonth (D5), avg (D6), weekly (D7).
 // Com todos ligados, a referência deve reproduzir o Worker; é assim que se prova que ela o entendeu
 // (passe A) antes de se ver onde a regra nova diverge (passe B).
 import { toDay, addDays, weekday, calendarMonths, ageYears, firstOfMonth, fromDay } from './dates.mjs';
@@ -22,7 +22,7 @@ const levelOf = (table, v) => { let i = 0; table.forEach(([min], k) => { if (v >
 const by = (rows, key) => { const m = new Map(); for (const r of rows) { const k = r[key]; if (!m.has(k)) m.set(k, []); m.get(k).push(r); } return m; };
 
 export function computeReference(data, today, opts = {}) {
-  const L = opts.legacy === 'all' ? { experience: 1, future: 1, newMonth: 1, avg: 1, weekly: 1 } : (opts.legacy || {});
+  const L = opts.legacy === 'all' ? { future: 1, newMonth: 1, avg: 1, weekly: 1 } : (opts.legacy || {});
   const T = toDay(today);
   const rules = Object.fromEntries(data.rules.map(r => [r.belt, r]));
   const lessonById = new Map(data.lessons.map(l => [l.id, l]));
@@ -59,7 +59,7 @@ export function computeReference(data, today, opts = {}) {
     const atRisk = st.status === 'ativo' && daysAbsent !== null && daysAbsent >= 14;
     // experiência (D3)
     let imported = st.imported_classes_belt || 0;
-    if (!L.experience) for (const p of promos) if (p.kind === 'faixa') imported += p.from_imported_belt || 0;
+    for (const p of promos) if (p.kind === 'faixa') imported += p.from_imported_belt || 0;
     const expScore = total + imported + (st.prior_months || 0) * 8;
     const expIdx = levelOf(EXPERIENCE, expScore);
     // aprendizado
@@ -107,7 +107,7 @@ export function computeReference(data, today, opts = {}) {
       classes_since_degree: sinceDegree, classes_since_belt: sinceBelt,
       months_in_belt: round1(calendarMonths(st.belt_since, today)),
       training_months: round1(Math.max(0, calendarMonths(st.start_date, today)) + (st.prior_months || 0)),
-      experience: { score: expScore, level: expIdx + 1, label: EXPERIENCE[expIdx][1] },
+      experience: { score: expScore, in_belt: sinceBelt, level: expIdx + 1, label: EXPERIENCE[expIdx][1] },
       learning: { pct: learnPct, level: levelOf(LEARNING, learnPct) + 1, label: LEARNING[levelOf(LEARNING, learnPct)][1], curriculum_size: curr.length, mastered, curriculum_pct: currPct },
       techniques_seen: seen.size, difficulties, next, criteria: crit, progress, ready,
       needs_profile: !st.birth_date, data_issues: issues

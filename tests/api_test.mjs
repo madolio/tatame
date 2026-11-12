@@ -92,6 +92,23 @@ ok(d.student.metrics.classes_since_belt <= 1, 'contagem de aulas na faixa reinic
 ok((await call('POST', `/api/students/${s1.id}/promote`, { kind: 'faixa', to_belt: 'branca', override: true })).status === 400, 'não volta faixa');
 d = (await call('DELETE', '/api/promotions/' + d.promotions[0].id)).body;
 ok(d.student.belt === 'branca' && d.student.degrees === 4, 'desfazer graduação restaura faixa e graus');
+// D3: a experiência total acompanha toda a trajetória; a promoção não a apaga
+{
+  const im = (await call('POST', '/api/students', { name: 'Veterano Importado', birth_date: '1990-05-05', start_date: ago(20), belt: 'azul', degrees: 4, belt_since: ago(300), degree_since: ago(100), imported_classes_belt: 300 })).body.student;
+  const exp = async () => (await call('GET', '/api/students/' + im.id)).body.student.metrics.experience;
+  let e = await exp();
+  ok(e.score === 300 && e.level === 4, 'D3: 300 aulas importadas = experiência 300 (Avançado)');
+  const pr = await call('POST', `/api/students/${im.id}/promote`, { kind: 'faixa', to_belt: 'roxa', override: true });
+  const after = pr.body.student.metrics;
+  ok(after.experience.score === 300 && after.experience.level === 4, 'D3: promover de faixa não apaga a experiência total');
+  ok(after.classes_since_belt === 0 && after.experience.in_belt === 0, 'D3: a experiência na faixa atual é um indicador separado e reinicia');
+  const edit = await call('PUT', '/api/students/' + im.id, { name: 'Veterano Importado', imported_classes_belt: 40 });
+  e = (edit.body.student || (await call('GET', '/api/students/' + im.id)).body.student).metrics.experience;
+  ok(e.score === 340 && e.in_belt === 40, 'D3: editar as aulas importadas muda só a faixa atual; o histórico (300) fica');
+  const undo = await call('DELETE', '/api/promotions/' + pr.body.promotions[0].id);
+  ok(undo.body.student.metrics.experience.score === 300, 'D3: desfazer a graduação não duplica as aulas importadas');
+  await call('DELETE', '/api/students/' + im.id);
+}
 // D1: sem data de nascimento não se presume idade nem trilha (infantil/adulta)
 {
   const sn = (await call('POST', '/api/students', { name: 'Sem Nascimento', start_date: ago(900), belt: 'branca', degrees: 4, belt_since: ago(800), degree_since: ago(300), imported_classes_belt: 200 })).body.student;

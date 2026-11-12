@@ -34,19 +34,19 @@ Documento de referência para a paridade (`tests/parity.mjs`) e para o TCC. Cada
 **Atual:** início no futuro produz `days_absent` negativo (ex.: −10). O restante coincide.
 **Pendente de confirmação (D4b):** a regra "14 dias de carência desde o cadastro" é a leitura que fiz de "não classificar automaticamente recém-cadastrados como em risco". Ela coincide com o comportamento atual.
 
-## 2. Experiência — D3 [provisória]
+## 2. Experiência — D3 [aprovada e aplicada]
 
 Dois indicadores diferentes:
 
 | Indicador | Definição |
 |---|---|
 | **Experiência total** (`experience.score`, nível e rótulo) | `presenças no sistema + aulas importadas acumuladas + meses de experiência anterior × 8` |
-| **Experiência na faixa atual** (`classes_since_belt`) | `presenças desde a data da faixa + aulas importadas da faixa atual` |
+| **Experiência na faixa atual** (`experience.in_belt`, igual a `classes_since_belt`) | `presenças desde a data da faixa + aulas importadas da faixa atual` |
 
 **Aulas importadas acumuladas** = `imported_classes_belt` atual + soma de `from_imported_belt` das graduações de **faixa** registradas do aluno. Ao promover de faixa o Worker zera `imported_classes_belt` e guarda o valor anterior em `promotions.from_imported_belt`; somar esse histórico preserva a trajetória sem contar duas vezes (graduações de grau não zeram `imported_classes_belt`, então não entram na soma; desfazer uma graduação apaga o registro e restaura o campo, então não há duplicidade).
-**Atual:** usa só `imported_classes_belt` atual. Depois da graduação de faixa a experiência cai (ex.: 300 pontos, "Avançado", viram 0, "Novato"). Níveis: 0 Novato, 30 Iniciante, 100 Intermediário, 250 Avançado, 500 Experiente.
+**Aplicação:** o Worker soma `from_imported_belt` das graduações de faixa (consulta agregada em `computeAll`). Antes da D3 a experiência caía ao promover (ex.: 300 pontos, "Avançado", viravam 2, "Novato"). Níveis: 0 Novato, 30 Iniciante, 100 Intermediário, 250 Avançado, 500 Experiente.
 
-Limitação conhecida: se o administrador editar `imported_classes_belt` depois de uma graduação de faixa, o total acumulado muda com a edição.
+**Edição administrativa:** alterar `imported_classes_belt` muda a referência da faixa atual (e, por consequência, o total), mas nunca reescreve `promotions.from_imported_belt`: o histórico de faixas anteriores fica como foi registrado. Desfazer uma graduação de faixa apaga a linha de `promotions` e devolve o valor ao aluno, então nada é contado duas vezes. Aulas importadas são aulas anteriores ao cadastro no sistema; o Worker não consegue detectar se alguém informou aulas que também estão registradas em presenças, então a orientação ao administrador é informar apenas o que veio de antes.
 
 ## 3. Graduação
 
@@ -133,7 +133,6 @@ O modelo de dados atual **não distingue** os dois casos: ambos são uma aula se
 
 | Regra | Efeito observado | Classe |
 |---|---|---|
-| D3 | Promover de faixa zera `imported_classes_belt` e a experiência cai: 300 pontos ("Avançado") viram 2 ("Novato") | regra aprovada |
 | D4 | Início no futuro: `days_absent = −10` | regra aprovada |
 | D5 | `new_this_month` conta inativos e início futuro (7 contra 4) | regra aprovada |
 | D6 | Média por aula inclui aulas sem presença (1,7 contra 1,9); o modelo não separa "sem chamada" de "chamada com zero" | depende de modelo |

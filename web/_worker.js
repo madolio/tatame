@@ -188,7 +188,7 @@ function nextBelt(st, age) {
   return ADULT[ADULT.indexOf(st.belt) + 1];
 }
 
-function studentMetrics(st, core, today, attByStudent, skillsByStudent, lessonTechs) {
+function studentMetrics(st, core, today, attByStudent, skillsByStudent, lessonTechs, priorImported) {
   const att = (attByStudent.get(st.id) || []).slice().sort((a, b) => a.date < b.date ? -1 : 1);
   const r = core.rules[st.belt] || core.rules.branca;
   const age = ageOn(st.birth_date, today);
@@ -202,7 +202,9 @@ function studentMetrics(st, core, today, attByStudent, skillsByStudent, lessonTe
   const weekly = att.filter(a => a.date > d84).length / 12;
   const hours = att.reduce((t, a) => t + Math.max(0, minutes(a.end_time) - minutes(a.start_time)), 0) / 60;
   const trainingMonths = Math.max(0, monthsBetween(st.start_date, today)) + (st.prior_months || 0);
-  const expScore = total + (st.imported_classes_belt || 0) + (st.prior_months || 0) * 8;
+  // Experiência total acompanha toda a trajetória: presenças no sistema + aulas importadas da faixa atual +
+  // as importadas das faixas anteriores (guardadas em promotions.from_imported_belt, que a promoção zera no aluno) + experiência anterior.
+  const expScore = total + (st.imported_classes_belt || 0) + (priorImported || 0) + (st.prior_months || 0) * 8;
   let expIdx = 0; EXPERIENCE.forEach(([min], i) => { if (expScore >= min) expIdx = i; });
 
   const sk = skillsByStudent.get(st.id) || new Map();
@@ -252,7 +254,7 @@ function studentMetrics(st, core, today, attByStudent, skillsByStudent, lessonTe
     classes_since_degree: sinceDegree, classes_since_belt: sinceBelt,
     months_in_belt: Math.round(monthsBetween(st.belt_since, today) * 10) / 10,
     training_months: Math.round(trainingMonths * 10) / 10,
-    experience: { score: expScore, level: expIdx + 1, label: EXPERIENCE[expIdx][1], next_at: EXPERIENCE[expIdx + 1]?.[0] ?? null },
+    experience: { score: expScore, in_belt: sinceBelt, level: expIdx + 1, label: EXPERIENCE[expIdx][1], next_at: EXPERIENCE[expIdx + 1]?.[0] ?? null },
     learning: { pct: learningPct, level: learnIdx + 1, label: LEARNING[learnIdx][1], curriculum_size: curr.length, mastered, curriculum_pct: curriculumPct },
     difficulties: difficulties.slice(0, 10),
     techniques_seen: seen.size,
@@ -272,7 +274,9 @@ async function computeAll(db) {
   const lessonDate = new Map(lessonRows.map(l => [l.id, l.date]));
   const lessonTechs = new Map();
   for (const x of lt) { if (!lessonTechs.has(x.lesson_id)) lessonTechs.set(x.lesson_id, []); lessonTechs.get(x.lesson_id).push(x.technique_id); }
-  const students = core.students.map(st => ({ ...st, metrics: studentMetrics(st, core, today, attByStudent, skillsByStudent, lessonTechs) }));
+  // Aulas importadas de faixas anteriores: só graduações de faixa (a de grau não zera imported_classes_belt, contá-la duplicaria).
+  const priorImported = new Map((await all(db, "SELECT student_id, SUM(from_imported_belt) n FROM promotions WHERE kind = 'faixa' GROUP BY student_id")).map(r => [r.student_id, r.n || 0]));
+  const students = core.students.map(st => ({ ...st, metrics: studentMetrics(st, core, today, attByStudent, skillsByStudent, lessonTechs, priorImported.get(st.id)) }));
   return { core, today, students, attByStudent, skillsByStudent, lessonTechs, lt, lessonDate };
 }
 

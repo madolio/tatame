@@ -66,23 +66,6 @@
       }
     },
     {
-      "id": "D3-experiencia-acumulada",
-      "classe": "regra-aprovada",
-      "regra": "D3",
-      "passe": "B",
-      "campos": [
-        "aluno:experience.score",
-        "aluno:experience.level",
-        "aluno:experience.label"
-      ],
-      "estado": "aguarda aplicação no Worker",
-      "evidencia": "ImportadoPromovido: 300 aulas importadas na faixa azul, promovido a roxa. Worker: 2 pontos (as 2 presenças), 'Novato', porque a promoção zera imported_classes_belt. Referência: 302 pontos, 'Avançado' (300 vêm de promotions.from_imported_belt). FaixaDepoisDeGrau: mesma causa (50 aulas).",
-      "contagem": {
-        "manual@2026-06-17": 6,
-        "manual@2026-04-30": 6
-      }
-    },
-    {
       "id": "D4-ausencia-negativa",
       "classe": "regra-aprovada",
       "regra": "D4",
