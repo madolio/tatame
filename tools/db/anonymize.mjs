@@ -91,3 +91,6 @@ export function leakCount(sqlText, sensitive) {
   for (const v of sensitive) if (sqlText.includes(v) || sqlText.includes(v.replace(/'/g, "''"))) n++;
   return n;
 }
+
+// Relatório de vazamento: quantidade e onde (sem os valores).
+export function leakReport(sqlText, sensitive) { const n = leakCount(sqlText, sensitive); return { count: n, where: n ? ['conteúdo'] : [] }; }

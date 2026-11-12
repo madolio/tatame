@@ -114,8 +114,10 @@ export async function main(argv, deps) {
     const code = await handler({ op, opts, target, deps, wrangler, version });
     return code ?? 0;
   } catch (e) {
-    deps.err(`[tatame-db] ${e instanceof GuardError ? 'RECUSADO' : 'ERRO'}: ${e.message}`);
-    return e instanceof GuardError ? 3 : 1;
+    // Recusas de segurança: travas, chave de backup ausente/incorreta/conteúdo não autêntico, armazenamento inválido.
+    const refused = e instanceof GuardError || e?.name === 'BackupCryptoError' || e?.name === 'StorageError';
+    deps.err(`[tatame-db] ${refused ? 'RECUSADO' : 'ERRO'}: ${e.message}`);
+    return refused ? 3 : 1;
   }
 }
 

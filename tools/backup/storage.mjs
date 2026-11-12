@@ -1,9 +1,11 @@
 // Armazenamento de backups, independente de fornecedor.
 // Interface de um adaptador:
-//   put(sqlFile, manifest) -> id       grava o .sql e o manifesto; nunca sobrescreve
-//   list() -> [manifest]               manifestos (com .id), do mais novo ao mais antigo
-//   get(id) -> { sqlPath, manifest }   caminho local legível do .sql (baixando, se for remoto)
-//   updateManifest(id, patch)          acrescenta informações (ex.: resultado do restore-test)
+//   put(boxFile, manifest) -> id       grava o backup CRIPTOGRAFADO (.tbk, ver crypto.mjs) e uma cópia do manifesto
+//                                      para listagem; nunca sobrescreve. Texto puro nunca chega ao armazenamento.
+//   list() -> [manifest]               manifestos (com .id e .status), do mais novo ao mais antigo
+//   get(id) -> { boxPath, manifest }   caminho local do .tbk e o manifest.json EXTERNO (não autenticado: quem
+//                                      decide é o manifesto de dentro do .tbk, comparado na abertura)
+//   updateStatus(id, patch)            resultados operacionais (ex.: restore-test) em status.json, fora do manifesto
 //   remove(id)                         apaga um backup (usado só pela retenção)
 // Hoje só existe o adaptador `dir` (diretório local). Um adaptador R2 (ou outro) implementa a mesma interface
 // e é escolhido em createStorage sem mudar export/verify/import.
@@ -45,21 +47,22 @@ export function dirAdapter(raw, envVars = process.env) {
   const privateFile = f => { try { chmodSync(f, 0o600); } catch { /* Windows: ACL do diretório escolhido */ } };
   return {
     kind: 'dir', root,
-    put(sqlFile, manifest) {
+    put(boxFile, manifest) {
       const stamp = manifest.created_at.replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
       let id = `${manifest.source_env}-${stamp}${manifest.anonymized ? '-anon' : ''}`;
       if (existsSync(join(root, id))) fail(`Já existe um backup com o identificador ${id}; nada foi sobrescrito.`);
       const d = join(root, id); mkdirSync(d);
-      copyFileSync(sqlFile, join(d, 'backup.sql')); privateFile(join(d, 'backup.sql'));
+      copyFileSync(boxFile, join(d, 'backup.tbk')); privateFile(join(d, 'backup.tbk'));
       writeFileSync(join(d, 'manifest.json'), JSON.stringify({ ...manifest, id }, null, 2)); privateFile(join(d, 'manifest.json'));
       return id;
     },
     list() {
       return readdirSync(root).filter(n => ID_RE.test(n) && existsSync(join(root, n, 'manifest.json')))
-        .map(n => ({ ...readManifest(n), id: n })).sort((a, b) => a.created_at < b.created_at ? 1 : -1);
+        .map(n => ({ ...readManifest(n), id: n, status: existsSync(join(root, n, 'status.json')) ? JSON.parse(readFileSync(join(root, n, 'status.json'), 'utf8')) : null })).sort((a, b) => a.created_at < b.created_at ? 1 : -1);
     },
-    get(id) { const d = base(id); if (!existsSync(join(d, 'backup.sql'))) fail(`Backup não encontrado: ${id}`); return { sqlPath: join(d, 'backup.sql'), manifest: { ...readManifest(id), id } }; },
-    updateManifest(id, patch) { const m = readManifest(id); writeFileSync(join(base(id), 'manifest.json'), JSON.stringify({ ...m, ...patch, id }, null, 2)); },
+    get(id) { const d = base(id); if (!existsSync(join(d, 'backup.tbk'))) fail(`Backup não encontrado: ${id}`); return { boxPath: join(d, 'backup.tbk'), manifest: { ...readManifest(id), id } }; },
+    status(id) { const f = join(base(id), 'status.json'); return existsSync(f) ? JSON.parse(readFileSync(f, 'utf8')) : null; },
+    updateStatus(id, patch) { const f = join(base(id), 'status.json'); const cur = existsSync(f) ? JSON.parse(readFileSync(f, 'utf8')) : {}; writeFileSync(f, JSON.stringify({ ...cur, ...patch }, null, 2)); privateFile(f); },
     remove(id) { rmSync(base(id), { recursive: true, force: true }); }
   };
 }
