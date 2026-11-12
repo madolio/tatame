@@ -161,9 +161,8 @@ registerOp('anonymize', async ctx => {
   const ws = workspace();
   try {
     const db = loadSql(o.sqlText);
-    let res, text;
-    try { res = anonymize(db); text = dumpSql(db); } finally { db.close(); }
-    const leak = leakReport(text, res.sensitive);
+    let res, text, leak;
+    try { res = anonymize(db); leak = leakReport(db, res.sensitive); text = dumpSql(db); } finally { db.close(); }
     if (leak.count) throw new Error(`${leak.count} valor(es) pessoal(is) original(is) ainda aparece(m) no resultado (${leak.where.join(', ')}); nada foi gravado.`);
     const manifest = buildManifest(text, { source_env: o.manifest.source_env, source_database: o.manifest.source_database, wrangler: o.manifest.wrangler, anonymized: true, derived_from: b.id });
     const v2 = verifyContent(text, manifest);
