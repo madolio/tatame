@@ -17,7 +17,7 @@
 // A chave (32 bytes) vem de fora: TATAME_BACKUP_KEY_FILE (arquivo com 64 hex ou 44 base64; preferido) ou
 // TATAME_BACKUP_KEY. Nunca é gravada, impressa nem colocada no manifesto.
 import { createCipheriv, createDecipheriv, randomBytes, createHash, timingSafeEqual } from 'node:crypto';
-import { readFileSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 
 export const MAGIC = Buffer.from('TATAMEBK', 'ascii');
@@ -27,7 +27,8 @@ const IV_LEN = 12, TAG_LEN = 16, KEYID_LEN = 8, HEADER_FIXED = 8 + 1 + 1 + KEYID
 const MAX_MANIFEST = 1024 * 1024;
 
 export class BackupCryptoError extends Error {
-  // kind: chave_ausente | chave_invalida | formato | chave_incorreta | autenticacao | manifesto_externo
+  // kind: chave_ausente | chave_invalida | chave_ilegivel | chave_permissao | formato | chave_incorreta | autenticacao
+  //       | manifesto_externo
   constructor(kind, message) { super(message); this.name = 'BackupCryptoError'; this.kind = kind; }
 }
 const fail = (kind, m) => { throw new BackupCryptoError(kind, m); };
@@ -40,12 +41,20 @@ const parseKey = text => {
 };
 
 // Lê a chave do ambiente. Falha fechada: sem chave válida, nenhum backup é criado nem aberto.
-export function loadKey(envVars = process.env) {
+// Nenhuma mensagem contém o conteúdo da chave (nem trechos). `io` só muda nos testes.
+export const KEY_FILE_MAX = 1024;
+export function loadKey(envVars = process.env, io = { readFileSync, statSync, platform: process.platform }) {
   let src = null, raw = null;
   if (envVars.TATAME_BACKUP_KEY_FILE) {
     const f = envVars.TATAME_BACKUP_KEY_FILE;
-    if (!isAbsolute(f) || !existsSync(f) || !statSync(f).isFile()) fail('chave_ausente', 'TATAME_BACKUP_KEY_FILE não aponta para um arquivo existente (caminho absoluto).');
-    raw = readFileSync(f, 'utf8'); src = 'arquivo';
+    let st = null;
+    if (isAbsolute(f)) { try { st = io.statSync(f); } catch { st = null; } }
+    if (!st || !st.isFile()) fail('chave_ausente', 'TATAME_BACKUP_KEY_FILE não aponta para um arquivo existente (caminho absoluto).');
+    if (st.size > KEY_FILE_MAX) fail('chave_invalida', 'O arquivo indicado em TATAME_BACKUP_KEY_FILE é grande demais para ser uma chave de backup (arquivo errado?).');
+    // POSIX: chave legível por grupo/outros é recusada. Windows: o modo não reflete a ACL (ver docs, seção 7.0).
+    if (io.platform !== 'win32' && (st.mode & 0o077)) fail('chave_permissao', `O arquivo da chave pode ser lido por outros usuários (permissão ${(st.mode & 0o777).toString(8)}). Rode: chmod 600 <arquivo>. Nada foi feito.`);
+    try { raw = io.readFileSync(f, 'utf8'); } catch (e) { fail('chave_ilegivel', `Não foi possível ler o arquivo da chave (${e?.code || 'erro de leitura'}). Confira as permissões. Nada foi feito.`); }
+    src = 'arquivo';
   } else if (envVars.TATAME_BACKUP_KEY) { raw = envVars.TATAME_BACKUP_KEY; src = 'variável'; }
   if (raw === null) fail('chave_ausente', 'Chave de backup ausente: defina TATAME_BACKUP_KEY_FILE (preferível) ou TATAME_BACKUP_KEY. Sem chave, nenhum backup é criado nem aberto.');
   const key = parseKey(raw);

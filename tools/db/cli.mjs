@@ -28,6 +28,9 @@ export const OPS = {
   anonymize: { offline: true, desc: 'gera uma cópia anonimizada de um backup (para staging)' },
   import: { remote: 'write', dest: ['staging', 'restore-test'], desc: 'importa um backup verificado em staging ou restore-test' },
   'restore-test': { remote: 'write', dest: ['restore-test'], desc: 'importa no restore-test e valida o banco restaurado com o Worker' },
+  'key-generate': { offline: true, desc: 'gera uma chave de backup nova num arquivo (fora do repositório e do OneDrive), sem exibi-la' },
+  'key-check': { offline: true, desc: 'confere a chave configurada (id) e se ela abre um backup (--backup/--file) ou quais abre (--all)' },
+  'key-verify-copy': { offline: true, desc: 'confere se a cópia de segurança da chave (--copy) é idêntica à chave configurada' },
   'temp-clean': { offline: true, desc: 'lista (ou, com --remove, apaga) áreas temporárias abandonadas por operações interrompidas' }
 };
 const handlers = {};
@@ -45,7 +48,7 @@ export function parseArgs(argv) {
     const eq = a.indexOf('=');
     const k = (eq > 0 ? a.slice(2, eq) : a.slice(2));
     if (eq > 0) o[k] = a.slice(eq + 1);
-    else if (['dry-run', 'replace', 'remove'].includes(k)) o[k] = true;
+    else if (['dry-run', 'replace', 'remove', 'all'].includes(k)) o[k] = true;
     else o[k] = argv[i + 1] !== undefined && !argv[i + 1].startsWith('--') ? argv[++i] : true;
   }
   return o;

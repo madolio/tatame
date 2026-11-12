@@ -20,7 +20,7 @@ assert.ok(!/onedrive/i.test(tmp), 'o temporário do sistema não pode estar no O
 const store = join(tmp, 'store'); mkdirSync(store);
 const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date());
 const KEY_HEX = generateKey(), KEY = Buffer.from(KEY_HEX, 'hex'), OTHER = Buffer.from(generateKey(), 'hex');
-const keyFile = join(tmp, 'chave-de-teste.txt'); writeFileSync(keyFile, KEY_HEX);
+const keyFile = join(tmp, 'chave-de-teste.txt'); writeFileSync(keyFile, KEY_HEX, { mode: 0o600 });
 const ENV = { TATAME_BACKUP_DIR: store, TATAME_BACKUP_KEY_FILE: keyFile };
 const workDirs = () => readdirSync(tmpdir()).filter(n => n.startsWith(WORK_PREFIX)).length;
 const workBefore = workDirs();

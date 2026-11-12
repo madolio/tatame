@@ -23,6 +23,15 @@ const ID_RE = /^[a-z0-9-]+-\d{8}T\d{6}Z(-[a-z0-9]+)?$/;
 
 const within = (child, parent) => { const c = child.toLowerCase(), p = parent.toLowerCase().replace(/[\\/]+$/, ''); return c === p || c.startsWith(p + sep.toLowerCase()) || c.startsWith(p + '/'); };
 
+// Local proibido para material sensível (backups e chave): dentro do repositório ou no OneDrive. Devolve o motivo ou null.
+export function forbiddenLocation(path, envVars = process.env) {
+  let real = resolve(path); try { real = realpathSync(path); } catch { /* ainda não existe: usa o caminho resolvido */ }
+  if (within(real, REPO) || within(resolve(path), REPO)) return 'dentro do repositório';
+  const oneDriveRoots = ['OneDrive', 'OneDriveConsumer', 'OneDriveCommercial'].map(k => envVars[k]).filter(Boolean);
+  if (/onedrive/i.test(real) || /onedrive/i.test(path) || oneDriveRoots.some(r => within(real, r))) return 'no OneDrive';
+  return null;
+}
+
 // Valida o diretório. `envVars` permite testar sem mexer no ambiente real.
 export function validateDir(raw, envVars = process.env) {
   if (!raw || !String(raw).trim()) fail('TATAME_BACKUP_DIR não está definido. Nenhum backup é gravado sem um diretório escolhido de propósito (ver docs/operacao-banco.md).');

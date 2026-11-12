@@ -28,7 +28,7 @@ try {
   ok(kindOf(() => loadKey({})) === 'chave_ausente', 'chave ausente: falha fechada');
   ok(kindOf(() => loadKey({ TATAME_BACKUP_KEY: 'curta' })) === 'chave_invalida', 'chave com tamanho errado: recusada');
   ok(kindOf(() => loadKey({ TATAME_BACKUP_KEY_FILE: 'relativo/chave.txt' })) === 'chave_ausente', 'arquivo de chave com caminho relativo: recusado');
-  const kf = join(tmp, 'chave.txt'); writeFileSync(kf, hex + '\n');
+  const kf = join(tmp, 'chave.txt'); writeFileSync(kf, hex + '\n', { mode: 0o600 });
   ok(loadKey({ TATAME_BACKUP_KEY_FILE: kf }).equals(key) && loadKey({ TATAME_BACKUP_KEY: Buffer.from(key).toString('base64') }).equals(key), 'chave lida de arquivo (hex) ou de variável (base64)');
   try { loadKey({ TATAME_BACKUP_KEY: 'x'.repeat(64) }); } catch (e) { ok(!e.message.includes('x'.repeat(10)), 'mensagens de erro não repetem a chave'); }
 
