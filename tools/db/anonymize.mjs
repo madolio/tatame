@@ -33,7 +33,7 @@ export const RULES = {
   password_resets: { drop: true },
   audit_log: { columns: { id: 'keep', at: 'keep', event: 'keep', staff_id: 'keep', detail: 'NULL' } },
   settings: { columns: { key: 'keep', value: "CASE key WHEN 'academy_name' THEN 'Academia de Teste (anonimizada)' ELSE value END" },
-    deleteWhere: "key = 'setup_token'", allowedKeys: ['academy_name', 'setup_done', 'setup_token'] },
+    deleteWhere: "key IN ('setup_token', 'setup_token_hash', 'setup_token_expires')", allowedKeys: ['academy_name', 'setup_done', 'setup_token', 'setup_token_hash', 'setup_token_expires'] },
   students: { columns: {
     id: 'keep', name: `'Aluno ' || ${ord('students')}`, nickname: 'NULL', birth_date: "CASE WHEN birth_date IS NULL THEN NULL ELSE substr(birth_date, 1, 4) || '-07-01' END",
     sex: 'NULL', phone: 'NULL', email: 'NULL', start_date: 'keep', prior_months: 'keep', belt: 'keep', degrees: 'keep', belt_since: 'keep', degree_since: 'keep',

@@ -110,7 +110,7 @@ const first = (db, sql, ...p) => db.prepare(sql).bind(...p).first();
 const run = (db, sql, ...p) => db.prepare(sql).bind(...p).run();
 
 async function getSettings(db) {
-  const rows = await all(db, "SELECT key, value FROM settings WHERE key <> 'setup_token'");
+  const rows = await all(db, "SELECT key, value FROM settings WHERE key NOT LIKE 'setup\\_token%' ESCAPE '\\'");
   return Object.fromEntries(rows.map(r => [r.key, r.value]));
 }
 
@@ -169,6 +169,13 @@ const normalizeResetCode = c => String(c || '').toUpperCase().replace(/O/g, '0')
 const resetCodeHash = (staffId, code) => sha256('tatame-reset:' + staffId + ':' + normalizeResetCode(code));
 const audit = (db, event, staffId, detail) => db.prepare('INSERT INTO audit_log (event, staff_id, detail) VALUES (?, ?, ?)').bind(event, staffId || null, detail || null);
 const RESET_BAD = 'Código inválido. Confira o código e o e-mail; se o erro continuar, peça um novo código.';
+// ---------- código de ativação (primeiro acesso de uma instalação nova) ----------
+// Gerado pelo operador (tools/setup-code.mjs): 26 caracteres Crockford (130 bits), validade limitada. No banco ficam só o
+// hash (settings.setup_token_hash) e a validade (settings.setup_token_expires). Sem esses dois, o setup fica FECHADO.
+// Mesmo prefixo/normalização do lado da ferramenta (um teste confere os dois lados). Processo separado da recuperação de senha.
+const SETUP_HASH_KEY = 'setup_token_hash', SETUP_EXP_KEY = 'setup_token_expires';
+const setupCodeHash = code => sha256('tatame-setup:' + normalizeResetCode(code));
+const SETUP_DENIED = 'Código de ativação inválido ou expirado. Peça um código novo a quem preparou a instalação.';
 
 // =====================================================================
 // Cálculo dos indicadores
@@ -561,18 +568,23 @@ async function route(req, env, url, ctx) {
 
   if (path === '/api/status' && method === 'GET') {
     const s = await getSettings(db);
-    s.setup_token = (await first(db, "SELECT value FROM settings WHERE key = 'setup_token'"))?.value;
     const n = await first(db, 'SELECT count(*) n FROM staff');
-    return json({ setup_needed: n.n === 0, setup_code_required: n.n === 0 && !!s.setup_token, academy_name: s.academy_name || null });
+    // O código de ativação é sempre exigido no primeiro acesso (nunca há setup sem código).
+    return json({ setup_needed: n.n === 0, setup_code_required: n.n === 0, academy_name: s.academy_name || null });
   }
 
   if (path === '/api/setup' && method === 'POST') {
     const n = await first(db, 'SELECT count(*) n FROM staff');
     if (n.n > 0) throw new HttpError(409, 'A academia já foi configurada.');
     const b = await body();
-    // Código de ativação: impede que um estranho que abra o site antes do dono vire administrador.
-    const tok = await first(db, "SELECT value FROM settings WHERE key = 'setup_token'");
-    if (tok && tok.value && !safeEqual(String(b.setup_code || '').trim().toUpperCase(), tok.value)) throw new HttpError(403, 'Código de ativação incorreto.');
+    if (!b || typeof b !== 'object' || Array.isArray(b)) bad('Corpo da requisição inválido.');
+    // Código de ativação OBRIGATÓRIO: sem hash configurado, código errado, curto ou vencido = recusado (falha fechada).
+    // O código só é aceito no campo setup_code; o valor nunca é devolvido nem registrado.
+    const code = typeof b.setup_code === 'string' ? normalizeResetCode(b.setup_code) : '';
+    const given = await setupCodeHash(code);
+    const tok = await first(db, 'SELECT (SELECT value FROM settings WHERE key = ?) h, (SELECT value FROM settings WHERE key = ?) e', SETUP_HASH_KEY, SETUP_EXP_KEY);
+    const live = !!(tok && typeof tok.h === 'string' && /^[0-9a-f]{64}$/.test(tok.h) && tok.e && Date.parse(tok.e) > Date.now());
+    if (!(code.length >= 26 && live && safeEqual(given, tok.h))) throw new HttpError(403, SETUP_DENIED);
     const academy = str(b.academy_name, { min: 2, max: 80, field: 'Nome da academia', required: true });
     const name = str(b.name, { min: 2, max: 80, field: 'Seu nome', required: true });
     const email = checkEmail(b.email), pw = checkPassword(b.password);
@@ -582,7 +594,7 @@ async function route(req, env, url, ctx) {
       db.prepare('INSERT INTO staff (id, name, email, pass_hash, pass_salt, role, belt) VALUES (?,?,?,?,?,?,?)').bind(id, name, email, hash, salt, 'admin', oneOf(b.belt, BELTS, 'Faixa', null)),
       db.prepare("INSERT INTO settings (key, value) VALUES ('academy_name', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").bind(academy),
       db.prepare("INSERT INTO settings (key, value) VALUES ('setup_done', '1') ON CONFLICT (key) DO UPDATE SET value = '1'"),
-      db.prepare("DELETE FROM settings WHERE key = 'setup_token'")
+      db.prepare("DELETE FROM settings WHERE key IN ('setup_token', ?, ?)").bind(SETUP_HASH_KEY, SETUP_EXP_KEY)
     ]);
     return json({ ok: true }, 201, { 'set-cookie': await createSession(db, id) });
   }

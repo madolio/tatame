@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
 import fs from 'node:fs'; import path from 'node:path'; import os from 'node:os'; import assert from 'node:assert'; import { fileURLToPath } from 'node:url';
 import { makeD1 } from './d1shim.mjs';
+import { generateCode, buildSetupSql } from '../tools/setup-token.mjs';
 const require = createRequire(import.meta.url);
 // Navegador: TATAME_CHROME aponta para um Chrome/Chromium local (usa playwright-core); sem ele, usa o pacote playwright.
 const { chromium } = require(process.env.TATAME_CHROME ? 'playwright-core' : 'playwright');
@@ -8,7 +9,7 @@ const launch = () => chromium.launch(process.env.TATAME_CHROME ? { executablePat
 const W = (await import('../web/_worker.js')).default;
 const ROOT = fileURLToPath(new URL('..', import.meta.url)), WEB = path.join(ROOT, 'web'), SHOTS = path.join(os.tmpdir(), 'tatame-shots');
 fs.rmSync(SHOTS, { recursive: true, force: true }); fs.mkdirSync(SHOTS, { recursive: true });
-const DB = makeD1(); DB.load(path.join(ROOT, 'db/schema.sql')); DB.load(path.join(ROOT, 'db/seed_tecnicas.sql')); DB.raw.exec("INSERT INTO settings (key, value) VALUES ('setup_token', 'K7Q2-TATAME')");
+const DB = makeD1(); DB.load(path.join(ROOT, 'db/schema.sql')); DB.load(path.join(ROOT, 'db/seed_tecnicas.sql')); const SETUP = generateCode(); DB.raw.exec(buildSetupSql(SETUP));
 const TYPES = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json' };
 const env = { DB, ASSETS: { fetch: async req => { const u = new URL(req.url); const f = path.join(WEB, u.pathname === '/' ? 'index.html' : u.pathname); return fs.existsSync(f) && !f.endsWith('_worker.js') ? new Response(fs.readFileSync(f), { headers: { 'content-type': TYPES[path.extname(f)] || 'text/plain' } }) : new Response('nf', { status: 404 }); } } };
 const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date());
@@ -43,7 +44,7 @@ const step = async (name, fn) => { try { await fn(); console.log('ok  ', name); 
 await step('configuração inicial', async () => {
   await page.goto('https://tatame.test/');
   await page.waitForSelector('text=Primeiro acesso');
-  await page.fill('[name=setup_code]', 'k7q2-tatame'); await page.fill('[name=academy_name]', 'Academia Exemplo BJJ'); await page.fill('[name=name]', 'Prof. Carlos'); await page.fill('[name=email]', 'carlos@exemplo.com'); await page.fill('[name=password]', 'curta');
+  await page.fill('[name=setup_code]', SETUP.toLowerCase()); await page.fill('[name=academy_name]', 'Academia Exemplo BJJ'); await page.fill('[name=name]', 'Prof. Carlos'); await page.fill('[name=email]', 'carlos@exemplo.com'); await page.fill('[name=password]', 'curta');
   await page.click('button[type=submit]'); await page.waitForSelector('text=pelo menos 8 caracteres');
   await page.fill('[name=password]', 'tatame2026');
   await page.click('button[type=submit]');

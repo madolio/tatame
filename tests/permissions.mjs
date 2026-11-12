@@ -4,6 +4,7 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { makeD1 } from './d1shim.mjs';
+import { generateCode, buildSetupSql } from '../tools/setup-token.mjs';
 const W = (await import('../web/_worker.js')).default;
 const DB = makeD1();
 DB.load(fileURLToPath(new URL('../db/schema.sql', import.meta.url))); DB.load(fileURLToPath(new URL('../db/seed_tecnicas.sql', import.meta.url)));
@@ -19,7 +20,8 @@ let fails = 0;
 const ok = (c, m) => { if (c) console.log('ok ', m); else { fails++; console.log('FAIL', m); } };
 
 // ---------- cenário ----------
-const admin = (await call('', 'POST', '/api/setup', { academy_name: 'Academia Matriz', name: 'Admin', email: 'admin@x.com', password: 'senhaforte1' })).cookie;
+const setupCode = generateCode(); DB.raw.exec(buildSetupSql(setupCode));
+const admin = (await call('', 'POST', '/api/setup', { academy_name: 'Academia Matriz', name: 'Admin', email: 'admin@x.com', password: 'senhaforte1', setup_code: setupCode })).cookie;
 await call(admin, 'POST', '/api/staff', { name: 'Professor', email: 'prof@x.com', password: 'senhaprof1', role: 'professor' });
 await call(admin, 'POST', '/api/staff', { name: 'Professora Dois', email: 'prof2@x.com', password: 'senhaprof2', role: 'professor' });
 const prof = (await call('', 'POST', '/api/login', { email: 'prof@x.com', password: 'senhaprof1' })).cookie;
@@ -42,7 +44,7 @@ const tech = (await call(admin, 'POST', '/api/techniques', { name: 'Técnica da 
 const T = [
   ['GET', '/api/health', null, ['ok', 'ok', 'ok']],
   ['GET', '/api/status', null, ['ok', 'ok', 'ok']],
-  ['POST', '/api/setup', { academy_name: 'X', name: 'Y', email: 'z@x.com', password: 'senhaforte1' }, [409, 409, 409]],
+  ['POST', '/api/setup', { academy_name: 'X', name: 'Y', email: 'z@x.com', password: 'senhaforte1', setup_code: setupCode }, [409, 409, 409]],
   ['POST', '/api/login', { email: 'nao@x.com', password: 'senhaerrada' }, [401, 401, 401]],
   ['POST', '/api/reset', { email: 'nao@x.com', code: 'AAAAA-AAAAA-AAAAA-AAAAA-AAAAA-A', password: 'senhanova123' }, [400, 400, 400]],
   ['POST', '/api/logout', null, ['ok', 'skip', 'skip']],

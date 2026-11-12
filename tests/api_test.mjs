@@ -1,6 +1,7 @@
 import assert from 'node:assert';
 import { fileURLToPath } from 'node:url';
 import { makeD1 } from './d1shim.mjs';
+import { generateCode, buildSetupSql } from '../tools/setup-token.mjs';
 const W = (await import('../web/_worker.js')).default;
 const DB = makeD1();
 DB.load(fileURLToPath(new URL('../db/schema.sql', import.meta.url))); DB.load(fileURLToPath(new URL('../db/seed_tecnicas.sql', import.meta.url)));
@@ -17,13 +18,13 @@ const ok = (c, m) => { assert.ok(c, m); console.log('ok ', m); };
 const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date());
 const ago = d => new Date(Date.parse(today) - d * 864e5).toISOString().slice(0, 10);
 
-DB.raw.exec("INSERT INTO settings (key, value) VALUES ('setup_token', 'ABC123')");
+const SETUP = generateCode(); DB.raw.exec(buildSetupSql(SETUP));
 ok((await call('GET', '/api/status')).body.setup_code_required, 'precisa configurar com código');
 ok((await call('POST', '/api/setup', { academy_name: 'Invasor', name: 'Invasor', email: 'x@x.com', password: 'senhaforte1', setup_code: 'errado' })).status === 403, 'sem o código: bloqueado');
 ok((await call('GET', '/api/state')).status === 401, 'sem login: 401');
-ok((await call('POST', '/api/setup', { academy_name: 'X', name: 'Prof', email: 'p@x.com', password: 'curta', setup_code: 'ABC123' })).status === 400, 'senha curta recusada');
+ok((await call('POST', '/api/setup', { academy_name: 'X', name: 'Prof', email: 'p@x.com', password: 'curta', setup_code: SETUP })).status === 400, 'senha curta recusada');
 ok((await call('POST', '/api/setup', { academy_name: 'Academia Teste', name: 'Professor', email: 'prof@x.com', password: 'senhaforte1' }, { csrf: false })).status === 403, 'CSRF bloqueado');
-ok((await call('POST', '/api/setup', { academy_name: 'Academia Teste', name: 'Professor', email: 'prof@x.com', password: 'senhaforte1', setup_code: 'abc123' })).status === 201, 'setup cria admin');
+ok((await call('POST', '/api/setup', { academy_name: 'Academia Teste', name: 'Professor', email: 'prof@x.com', password: 'senhaforte1', setup_code: SETUP.toLowerCase().replace(/-/g, ' ') })).status === 201, 'setup cria admin (código aceito sem diferenciar maiúsculas e separadores)');
 let adminCookie = cookie;
 
 // sessão: renova quando faltam menos de 15 dias; não renova antes; teto de 90 dias desde o login

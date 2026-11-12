@@ -1,6 +1,7 @@
 // Harness da paridade: relógio fixo + Worker real sobre D1 emulado + leitura das tabelas cruas.
 import { fileURLToPath } from 'node:url';
 import { makeD1 } from '../d1shim.mjs';
+import { generateCode, buildSetupSql } from '../../tools/setup-token.mjs';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const RealDate = Date;
@@ -30,7 +31,8 @@ export async function openWorld(today) {
     const sc = r.headers.get('set-cookie'); if (sc) cookie = sc.split(';')[0];
     return { status: r.status, body: await r.json().catch(() => null) };
   };
-  const setup = await api('POST', '/api/setup', { academy_name: 'Academia Paridade', name: 'Admin', email: 'admin@paridade.test', password: 'senhaforte1' });
+  const setupCode = generateCode(); DB.raw.exec(buildSetupSql(setupCode));
+  const setup = await api('POST', '/api/setup', { academy_name: 'Academia Paridade', name: 'Admin', email: 'admin@paridade.test', password: 'senhaforte1', setup_code: setupCode });
   if (setup.status !== 201) throw new Error('setup falhou: ' + JSON.stringify(setup.body));
   DB.raw.prepare("UPDATE auth_sessions SET expires_at = '2999-01-01T00:00:00.000Z', created_at = ?").run(today + 'T00:00:00.000Z');
   freezeClock(today);

@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { makeD1 } from './d1shim.mjs';
+import { generateCode, buildSetupSql } from '../tools/setup-token.mjs';
 const W = (await import('../web/_worker.js')).default;
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const OUT = path.join(ROOT, 'fake_data.sql');
@@ -20,7 +21,8 @@ const ago = d => new Date(Date.parse(today) - d * 864e5).toISOString().slice(0, 
 let seed = 42; const rnd = () => (seed = (seed * 9301 + 49297) % 233280) / 233280;
 const phone = () => '11 9' + String(Math.floor(rnd() * 1e8)).padStart(8, '0');
 
-await api('POST', '/api/setup', { academy_name: 'tmp', name: 'Gerador', email: 'gen@x.com', password: 'gerador123' });
+const setupCode = generateCode(); DB.raw.exec(buildSetupSql(setupCode));
+await api('POST', '/api/setup', { academy_name: 'tmp', name: 'Gerador', email: 'gen@x.com', password: 'gerador123', setup_code: setupCode });
 const T = '[teste]';
 const wdToday = new Date(today + 'T12:00:00Z').getUTCDay();
 const grade = [
