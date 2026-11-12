@@ -43,6 +43,9 @@ painel deixam de valer. Por isso:
 4. Para backups: um diretório **fora do repositório e fora do OneDrive**, de preferência num disco cifrado
    (BitLocker), e a variável `TATAME_BACKUP_DIR` apontando para ele, mais a chave de backup em
    `TATAME_BACKUP_KEY_FILE` (seção 7.0).
+5. Disco do sistema cifrado (BitLocker/FileVault/LUKS): durante export/import existe SQL em claro no temporário
+   do sistema, e apagar um arquivo não garante que os bytes sumam do disco (seção 7.6). Sem isso, não exporte dados
+   reais nessa máquina.
 
 ## 3. Ambientes e travas
 
@@ -90,6 +93,13 @@ node tools/db.mjs <operação> --env <ambiente> [opções]
 | `anonymize` | offline | Gera cópia pseudonimizada (criptografada) de um backup verificado. |
 | `import` | escrita | Importa um backup verificado em `staging` ou `restore-test`. |
 | `restore-test` | escrita | Importa no `restore-test`, reexporta, compara e valida com o Worker real. |
+| `key-generate` | offline | Gera a chave de backup num arquivo novo (`--out`), fora do repositório e do OneDrive; mostra só o id. |
+| `key-check` | offline | Confere a chave configurada; com `--backup`/`--file` prova que ela abre o backup; `--all` diz a chave de cada backup. |
+| `key-verify-copy` | offline | Confere se a cópia de segurança da chave (`--copy`) é idêntica à configurada. |
+| `temp-clean` | offline | Lista áreas temporárias deixadas por operações interrompidas; `--remove` apaga só as comprovadamente abandonadas (7.6). |
+
+Fora do wrapper: `node tools/db-synthetic.mjs [--sem-002]` grava um backup **sintético** criptografado para o ensaio
+(`docs/validacao-d1.md`).
 
 ## 5. Linha de base da produção (uma vez, antes da primeira migração)
 
@@ -173,18 +183,62 @@ O SHA-256 dentro do manifesto só detecta corrupção **acidental**, porque qual
 
 Sem chave válida, **nenhum** backup é criado nem aberto, e o export é recusado antes de tocar no banco. A chave nunca vai para o Git, para o manifesto, para logs ou para mensagens.
 
-Para gerar uma chave direto num arquivo, **fora do repositório e do OneDrive**, sem exibi-la na tela (ajuste o caminho; o comando se recusa a sobrescrever um arquivo existente):
-```
-node -e "require('fs').writeFileSync(process.argv[1], require('crypto').randomBytes(32).toString('hex'), { mode: 0o600, flag: 'wx' })" D:\chaves\tatame-backup.key
-set TATAME_BACKUP_KEY_FILE=D:\chaves\tatame-backup.key
-```
-Guarde uma cópia da chave **separada dos backups** (por exemplo num gerenciador de senhas). **Sem a chave, os backups são irrecuperáveis.** Quem tiver a chave e um backup integral tem acesso aos dados pessoais.
+**Leitura da chave (falha fechada).** Antes de qualquer operação a chave é conferida: caminho absoluto, arquivo comum,
+no máximo 1 KB, 32 bytes em hex/base64. No Linux/macOS, um arquivo legível por grupo ou outros (ex.: 644) é **recusado**
+(`chmod 600`). No Windows o modo não reflete a ACL; a proteção é a ACL (abaixo). Erros de leitura são relatados pelo
+código (ex.: `EACCES`), nunca com conteúdo.
 
-Para trocar a chave: gere uma nova, faça um export novo e mantenha a antiga até todos os backups dela saírem da retenção. Hoje não existe recriptografia automática.
+#### Procedimento da chave
+
+1. **Gerar** (uma vez), num local fora do repositório e do OneDrive. O comando recusa esses locais e caminhos
+   relativos, nunca sobrescreve e mostra só o **id da chave** (16 hex, não secreto):
+   ```
+   node tools/db.mjs key-generate --out D:\chaves\tatame-backup.key
+   set TATAME_BACKUP_KEY_FILE=D:\chaves\tatame-backup.key
+   ```
+2. **Restringir o acesso.** Linux/macOS: o arquivo já nasce 600. Windows (não testado automaticamente, conferir com
+   `icacls` depois):
+   ```
+   icacls D:\chaves\tatame-backup.key /inheritance:r /grant:r "%USERNAME%:R"
+   ```
+3. **Cópia de segurança, independente dos backups.** Os backups ficam em `TATAME_BACKUP_DIR`; a cópia da chave vai
+   para **outro** lugar: gerenciador de senhas (conteúdo do arquivo como nota segura) **ou** pendrive cifrado guardado
+   separado. Nunca no mesmo disco/diretório dos backups, no OneDrive, no Git, em e-mail ou em chat. Anote junto o id.
+4. **Conferir a cópia** (logo depois de fazê-la e a cada 3 meses). Restaure a cópia para um arquivo temporário fora do
+   repositório e rode:
+   ```
+   node tools/db.mjs key-verify-copy --copy E:\tatame-backup.key
+   ```
+   Esperado: `cópia idêntica à chave configurada (id ...)`. Depois apague o arquivo temporário restaurado.
+5. **Recuperar** (chave principal perdida): restaure a cópia para um arquivo, aponte `TATAME_BACKUP_KEY_FILE` para ele
+   e prove que ela abre o backup **mais antigo** ainda retido:
+   ```
+   node tools/db.mjs key-check --backup <id do backup mais antigo>
+   node tools/db.mjs verify --backup <id>
+   ```
+   Esperado: `autenticação completa ok` e `backup autêntico, íntegro e importável`. Esse caminho (perda, recuperação
+   pela cópia, abertura de backup antigo) é coberto por `tests/backup_key.mjs`.
+6. **Trocar a chave** (suspeita de vazamento, saída de alguém que tinha acesso ou rotina anual): gere uma nova com
+   `key-generate` em **outro arquivo**, faça cópia e conferência dela (passos 3–4), aponte `TATAME_BACKUP_KEY_FILE`
+   para a nova e faça um export novo. **Guarde a antiga** (e sua cópia) até o último backup feito com ela sair da
+   retenção (até ~3 meses). Para saber qual chave abre cada backup:
+   ```
+   node tools/db.mjs key-check --all
+   ```
+   Mostra, para cada backup, "esta chave" ou "outra chave (id ...)". Para abrir um backup antigo, aponte
+   `TATAME_BACKUP_KEY_FILE` para a chave antiga de id correspondente. Com uma chave errada, a mensagem é
+   "Chave incorreta" (não é confundida com adulteração). Não há recriptografia automática: é desnecessária enquanto a
+   chave antiga estiver guardada, e recriptografar exigiria abrir todos os backups em claro de novo. Se a troca for por
+   **vazamento**, os backups antigos continuam legíveis por quem tem a chave antiga: apague-os assim que um backup novo
+   for verificado.
+
+**Id da chave no manifesto.** Avaliado e não adotado: o id já está no cabeçalho do `.tbk`, coberto pela autenticação
+(AAD), e é lido sem a chave por `key-check --all`. Colocá-lo também no manifesto mudaria o manifesto v2 sem ganho
+de segurança.
 
 **Formato e versões.** O manifesto v2 corresponde ao contêiner `TATAMEBK` v1. O formato anterior (`backup.sql` em claro + manifesto v1, da Etapa 5) não é aceito. Nunca houve backup real naquele formato, então não existe migração a fazer. Um formato futuro deve incrementar a versão no cabeçalho, e a leitura recusa versões desconhecidas.
 
-**Texto puro.** O SQL em claro só existe numa área temporária do sistema (`tatame-bkp-work-*`, permissão 0600), criada para cada operação e apagada no fim, tanto em sucesso quanto em erro. O teste confere que nenhuma sobra. Uma queda abrupta do processo (energia, kill) pode deixar uma dessas pastas: apague-as manualmente no temporário do sistema.
+**Texto puro.** O SQL em claro só existe numa área temporária protegida, descrita na seção 7.6.
 
 ### 7.1 Exportar
 ```
@@ -267,6 +321,49 @@ prova o mecanismo (formato, ordem, integridade, compatibilidade com o Worker); p
 **integral** prova aquele arquivo específico. Só o segundo garante que um backup real de produção é recuperável — e
 só deve ser feito com autorização explícita, apagando o `restore-test` em seguida.
 
+### 7.6 Arquivos temporários com SQL em claro
+
+**Onde existem.** Só onde o wrangler exige arquivo: a saída do `d1 export` (export e a ida e volta do restore-test) e a
+entrada do `d1 execute --file` (import). `verify`, `anonymize` e a validação SQL trabalham em memória. Não dá para
+eliminar esses arquivos sem deixar de usar o wrangler.
+
+**Como são protegidos** (`tools/backup/tempspace.mjs`):
+- Um diretório novo por operação no temporário do sistema (`%TEMP%` no Windows), nunca no repositório nem no OneDrive,
+  com nome `tatame-bkp-work-<16 hex aleatórios>-<6 aleatórios>`. Os arquivos também têm nome aleatório
+  (`import-<16 hex>.sql`) e são criados sem sobrescrever nada.
+- Permissões: Linux/macOS 0700 no diretório e 0600 nos arquivos. Windows: herdam a ACL do `%TEMP%` do usuário
+  (por padrão, o próprio usuário, SYSTEM e administradores).
+- Cada arquivo em claro é apagado **logo depois do uso** (lido o export, enviado o import), não só no fim.
+- O diretório é apagado em `finally` (sucesso e erro), no encerramento do processo e em Ctrl+C / SIGTERM / SIGHUP.
+- Um marcador `.tatame-work.json` (ferramenta, pid, máquina, início) identifica a área como do Tatame. Ele não tem
+  conteúdo de dados.
+- Mensagens de erro de SQLite e do wrangler saem **sem literais** (`'...'`, `"..."`, `X'..'`) e **sem URLs**, porque podem
+  conter dados ou a URL assinada do export. O wrangler roda com `WRANGLER_WRITE_LOGS=false`, para não gravar a saída
+  dele em arquivo de log.
+
+**Interrupção abrupta** (kill -9, queda de energia, travamento): nada roda, e a área fica. Todo export/import avisa
+`[aviso] N área(s) temporária(s) ...` quando encontra uma. Para tratar:
+```
+node tools/db.mjs temp-clean            (só lista: ativo / abandonado / desconhecido, com o motivo)
+node tools/db.mjs temp-clean --remove   (apaga só as abandonadas)
+```
+Uma área só é considerada **abandonada**, e só então removível, se tiver marcador válido do Tatame, for desta
+máquina, o processo dono não existir mais e ela contiver **apenas** arquivos com os nomes esperados. A remoção é
+arquivo por arquivo, sem apagar recursivamente às cegas. Qualquer outra coisa é só relatada e nunca removida:
+diretórios da versão anterior sem marcador, de outra máquina, com arquivos inesperados ou de processo ainda vivo.
+Itens sem o prefixo nem são examinados.
+
+**Remoção manual** (para o que `temp-clean` relatou como desconhecido): abra o temporário (Windows: `explorer %TEMP%`;
+Linux/macOS: `echo $TMPDIR` ou `/tmp`), confira que a pasta começa com `tatame-bkp-work-` e que nenhuma operação do
+Tatame está em andamento, e apague só essa pasta.
+
+**Limite: apagar não é destruir.** Remover um arquivo tira a entrada do sistema de arquivos. **Não garante** que os
+bytes sumiram do disco: em SSD (wear leveling, TRIM), em sistemas com journaling, em cópias de sombra/backup do
+sistema, em antivírus e indexadores, restos podem permanecer até serem sobrescritos. Sobrescrever antes de apagar não
+resolve isso em SSD e por isso não é feito. A defesa real é o **disco inteiro cifrado** (BitLocker/FileVault/LUKS),
+exigido no pré-requisito 5 da seção 2, e manter o `%TEMP%` fora de pastas sincronizadas e de backups do sistema que
+copiem o temporário.
+
 ## 8. Time Travel (recuperação nativa do D1)
 
 - Sempre ligado, sem custo. No **plano gratuito a janela é de 7 dias** (30 no pago). Não substitui backup: passou
@@ -305,6 +402,9 @@ A Cloudflare só aceita pedido de recuperação (undelete) em até **7 dias**. D
 
 ## 10. Ensaio real (pendente — exige autorização para cada passo remoto)
 
+O checklist detalhado (comando, resultado esperado, critério de aprovação e de interrupção, e as dúvidas sobre o
+wrangler/D1 que só o ensaio confirma) está em **`docs/validacao-d1.md`**. Resumo:
+
 1. Criar os bancos: `wrangler d1 create tatame-staging` e `wrangler d1 create tatame-restore-test`; preencher os IDs
    (seção 3); commit.
 2. `export` da produção → `verify` → `anonymize` → `import` em staging → `migrate --env staging` → `check`.
@@ -330,7 +430,11 @@ A Cloudflare só aceita pedido de recuperação (undelete) em até **7 dias**. D
 - Os testes do wrapper simulam o wrangler sobre SQLite real; o fluxo real contra o D1 só será provado no ensaio da
   seção 10.
 - A retenção é calculada, mas a remoção dos backups antigos é manual.
-- Backup e descriptografia carregam o arquivo inteiro na memória (adequado ao limite de 500 MB do D1 gratuito); não há
-  rotação/recriptografia automática de chave; a área temporária de texto puro não sobrevive a uma queda abrupta do processo
-  sem limpeza manual.
+- Backup e descriptografia carregam o arquivo inteiro na memória (adequado ao limite de 500 MB do D1 gratuito).
+- Não há recriptografia automática de chave (decisão: a chave antiga é guardada até seus backups saírem da retenção).
+- Uma queda abrupta do processo deixa a área temporária em claro até alguém rodar `temp-clean --remove`; apagar não é
+  destruir (7.6). No Windows a proteção dos temporários e da chave é a ACL, não o modo POSIX.
+- O `import` envia o SQL em claro, por HTTPS, para a área de importação do D1, e o `export` baixa o banco por uma URL
+  assinada válida por 1 hora. São comportamentos do próprio wrangler/D1: conferidos no código, mas não no serviço real
+  (`docs/validacao-d1.md`, seção 0).
 - A pseudonimização mantém datas e padrão de presença: não é anonimização absoluta.
