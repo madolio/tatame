@@ -2,7 +2,7 @@
 // Independente do Worker: não importa nada de web/. Lê linhas cruas do banco e devolve os mesmos indicadores.
 //
 // opts.legacy liga, regra por regra, o comportamento ATUAL do Worker no lugar da regra de referência:
-//   newMonth (D5), avg (D6), weekly (D7).
+//   avg (D6), weekly (D7).
 // Com todos ligados, a referência deve reproduzir o Worker; é assim que se prova que ela o entendeu
 // (passe A) antes de se ver onde a regra nova diverge (passe B).
 import { toDay, addDays, weekday, calendarMonths, ageYears, firstOfMonth, fromDay } from './dates.mjs';
@@ -22,7 +22,7 @@ const levelOf = (table, v) => { let i = 0; table.forEach(([min], k) => { if (v >
 const by = (rows, key) => { const m = new Map(); for (const r of rows) { const k = r[key]; if (!m.has(k)) m.set(k, []); m.get(k).push(r); } return m; };
 
 export function computeReference(data, today, opts = {}) {
-  const L = opts.legacy === 'all' ? { newMonth: 1, avg: 1, weekly: 1 } : (opts.legacy || {});
+  const L = opts.legacy === 'all' ? { avg: 1, weekly: 1 } : (opts.legacy || {});
   const T = toDay(today);
   const rules = Object.fromEntries(data.rules.map(r => [r.belt, r]));
   const lessonById = new Map(data.lessons.map(l => [l.id, l]));
@@ -129,8 +129,7 @@ export function computeReference(data, today, opts = {}) {
   });
   const l30 = lessonsIn(T - 29, T);
   const monthStart = toDay(firstOfMonth(today));
-  const newMonth = L.newMonth ? data.students.filter(s => toDay(s.start_date) >= monthStart).length
-    : active.filter(s => toDay(s.start_date) >= monthStart && toDay(s.start_date) <= T).length;
+  const newMonth = active.filter(s => toDay(s.start_date) >= monthStart && toDay(s.start_date) <= T).length;
   const ids = x => active.filter(s => x(students[s.id])).map(s => s.id);
   const l56 = lessonsIn(T - 55, T);
   const heat = {};

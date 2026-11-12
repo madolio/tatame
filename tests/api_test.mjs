@@ -124,6 +124,22 @@ ok(d.student.belt === 'branca' && d.student.degrees === 4, 'desfazer graduação
   ok((await met(n14)).at_risk && (await met(n14)).days_absent === 14, 'D4b: com 14 dias sem presença entra em risco');
   for (const s of [fut, n13, n14, n0]) await call('DELETE', '/api/students/' + s.id);
 }
+// D5: novos no mês = só alunos ativos, início entre o dia 1 do mês e hoje
+{
+  const novos = async () => (await call('GET', '/api/state')).body.dashboard.kpis.new_this_month;
+  const base = await novos();
+  const a = (await call('POST', '/api/students', { name: 'Novo Ativo', start_date: ago(0) })).body.student;
+  ok(await novos() === base + 1, 'D5: aluno ativo que começa hoje conta como novo no mês');
+  const b = (await call('POST', '/api/students', { name: 'Novo Inativo', start_date: ago(0), status: 'inativo' })).body.student;
+  ok(await novos() === base + 1, 'D5: aluno inativo não conta');
+  const c = (await call('POST', '/api/students', { name: 'Novo Futuro', start_date: ago(0) })).body.student;
+  DB.raw.prepare('UPDATE students SET start_date = ? WHERE id = ?').run(ago(-3), c.id);
+  ok(await novos() === base + 1, 'D5: início no futuro não conta');
+  const e = (await call('POST', '/api/students', { name: 'Veio Mês Passado', start_date: ago(0) })).body.student;
+  DB.raw.prepare('UPDATE students SET start_date = ? WHERE id = ?').run(`${new Date(Date.now() - 40 * 864e5).toISOString().slice(0, 7)}-01`, e.id);
+  ok(await novos() === base + 1, 'D5: início em outro mês não conta');
+  for (const s of [a, b, c, e]) await call('DELETE', '/api/students/' + s.id);
+}
 // D1: sem data de nascimento não se presume idade nem trilha (infantil/adulta)
 {
   const sn = (await call('POST', '/api/students', { name: 'Sem Nascimento', start_date: ago(900), belt: 'branca', degrees: 4, belt_since: ago(800), degree_since: ago(300), imported_classes_belt: 200 })).body.student;

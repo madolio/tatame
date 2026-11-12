@@ -95,7 +95,7 @@ Invariantes verificadas a partir da tabela de graduações, em ordem de registro
 | Indicador | Regra de referência | Atual |
 |---|---|---|
 | `active_students` | alunos ativos | igual |
-| `new_this_month` — D5 [provisória] | alunos **ativos** com `início` dentro do mês de hoje (do dia 1 até hoje; início futuro é inválido e não conta) | conta qualquer situação e início futuro |
+| `new_this_month` — D5 [aprovada e aplicada] | alunos **ativos** com `início` dentro do mês de hoje (do dia 1 até hoje; início futuro é inválido e não conta) | (antes da D5: contava qualquer situação e início futuro; 7 contra 4 no cenário manual) |
 | `at_risk`, `ready` | alunos **ativos** com a respectiva marca | igual |
 | `lessons_30d` | aulas na janela de 30 dias | igual |
 | `avg_per_lesson_30d` — D6 [provisória] | presenças ÷ aulas **com chamada** (≥ 1 presença) na janela, 1 casa | divide por todas as aulas, inclusive vazias |
@@ -131,7 +131,6 @@ O modelo de dados atual **não distingue** os dois casos: ambos são uma aula se
 
 | Regra | Efeito observado | Classe |
 |---|---|---|
-| D5 | `new_this_month` conta inativos e início futuro (7 contra 4) | regra aprovada |
 | D6 | Média por aula inclui aulas sem presença (1,7 contra 1,9); o modelo não separa "sem chamada" de "chamada com zero" | depende de modelo |
 | D7 | Média semanal dividida sempre por 12 (0,5 contra 2,0 para quem entrou há 2 semanas) | regra aprovada |
 | item 8 | 31/01 → 30/04, alvo de 3 meses: calendário cumpre, aproximação dá 2,97 | tolerância |

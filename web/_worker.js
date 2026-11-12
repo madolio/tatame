@@ -317,7 +317,7 @@ async function dashboard(db, C) {
     today,
     kpis: {
       active_students: active.length,
-      new_this_month: students.filter(s => s.start_date >= startMonth).length,
+      new_this_month: active.filter(s => s.start_date >= startMonth && s.start_date <= today).length, // D5: ativos que começaram no mês de referência, sem início futuro
       at_risk: active.filter(s => s.metrics.at_risk).length,
       ready: active.filter(s => s.metrics.ready).length,
       lessons_30d: l30.length,
