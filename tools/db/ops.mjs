@@ -2,3 +2,4 @@
 export * from './cli.mjs';
 import './ops-schema.mjs';
 import './ops-migrate.mjs';
+import './backup.mjs';
