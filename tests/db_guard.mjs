@@ -1,7 +1,7 @@
 // Travas do wrapper de banco (tools/db.mjs). Usa um executor falso: cada recusa precisa provar que NENHUM
 // comando chegou ao wrangler. Os IDs abaixo são fictícios e existem só neste teste.
 import assert from 'node:assert';
-import { main, resolveTarget, loadEnvironments, OPS } from '../tools/db/cli.mjs';
+import { main, resolveTarget, loadEnvironments, OPS } from '../tools/db/ops.mjs';
 
 const ok = (c, m) => { assert.ok(c, m); console.log('ok ', m); };
 const ID = { staging: '11111111-1111-4111-8111-111111111111', rt: '22222222-2222-4222-8222-222222222222', prod: '33333333-3333-4333-8333-333333333333' };
