@@ -21,7 +21,7 @@ Sistema web para o professor acompanhar os alunos: frequência, chamada, técnic
 - **Força bruta:** 8 tentativas em 15 minutos por par (e-mail, IP) e 30 por IP. O tempo de resposta é o mesmo para e-mail inexistente.
 - **Sessão:** renova sozinha quando faltam menos de 15 dias, até o teto de 90 dias desde o login.
 - **Recuperação de senha:** professor: o administrador troca em Equipe. Administrador: código de uso único (30 min, só o hash no banco) gerado pelo operador com `tools/reset-code.mjs` e informado na tela de login ("Tenho um código de recuperação"). Procedimento em `docs/recuperacao-de-senha.md`.
-- **Primeiro acesso:** protegido por código de ativação, que é apagado depois do uso.
+- **Primeiro acesso:** só com código de ativação gerado pelo operador (`tools/setup-code.mjs`; no banco fica só o hash, com validade). Sem código configurado o setup fica fechado; o primeiro administrador e o consumo do código são uma única transação. Procedimento em `docs/nova-instalacao.md`.
 - **Cabeçalhos:** CSP, X-Frame-Options e nosniff. Toda entrada é validada no servidor.
 
 ## Regras de negócio
