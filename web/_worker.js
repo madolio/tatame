@@ -745,7 +745,8 @@ async function route(req, env, url) {
   // ---------- exportação ----------
   if (path === '/api/export/alunos.csv' && method === 'GET') {
     const C = await computeAll(db);
-    const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    // Aspas duplicadas; apóstrofo na frente de = + - @ e tabulação, para a planilha não interpretar o campo como fórmula; sem caracteres de controle.
+    const q = v => { let s = String(v ?? '').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, ''); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return `"${s.replace(/"/g, '""')}"`; };
     const head = ['Nome', 'Apelido', 'Situação', 'Faixa', 'Graus', 'Na faixa desde', 'Último grau', 'Início', 'Idade', 'Aulas (total)', 'Aulas 30 dias', 'Média semanal', 'Última presença', 'Experiência', 'Aprendizado %', 'Próxima graduação', 'Apto'];
     const rows = C.students.map(s => [s.name, s.nickname, s.status, s.belt, s.degrees, s.belt_since, s.degree_since, s.start_date, s.metrics.age, s.metrics.classes_total, s.metrics.classes_last_30d,
       String(s.metrics.weekly_avg).replace('.', ','), s.metrics.last_attendance, s.metrics.experience.label, s.metrics.learning.pct,
