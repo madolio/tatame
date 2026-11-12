@@ -103,6 +103,12 @@ cookie = adminCookie;
 const st = (await call('GET', '/api/state')).body;
 ok(st.dashboard.kpis.active_students === 3 && st.dashboard.weekly.length === 12, 'painel calculado');
 ok(st.techniques.find(t => t.id === mata.id).times_taught === 13, 'técnica: vezes ensinada');
+ok(st.techniques.find(t => t.id === mata.id).last_taught === ago(1), 'técnica: última aula com presentes');
+// aula sem presentes também conta como técnica ensinada, com data
+const tri = tech.find(t => t.name === 'Triângulo');
+ok((await call('POST', '/api/lessons', { date: ago(2), start_time: '07:00', end_time: '08:00', title: 'Só técnica', student_ids: [], technique_ids: [tri.id] })).status === 201, 'aula sem presentes registrada');
+const tri2 = (await call('GET', '/api/state')).body.techniques.find(t => t.id === tri.id);
+ok(tri2.times_taught === 1 && tri2.last_taught === ago(2) && tri2.taught_90d === 1, 'técnica de aula sem presentes: vezes, última aula e 90 dias contam');
 const csvBefore = (await call('GET', '/api/export/alunos.csv')).body;
 ok((await call('POST', '/api/students', { name: '=1+1', nickname: '@cmd', start_date: ago(1) })).status === 201, 'aluno com nome que parece fórmula');
 const csv = await call('GET', '/api/export/alunos.csv');

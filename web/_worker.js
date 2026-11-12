@@ -243,11 +243,13 @@ async function computeAll(db) {
   for (const a of core.att) { if (!attByStudent.has(a.student_id)) attByStudent.set(a.student_id, []); attByStudent.get(a.student_id).push(a); }
   const skillsByStudent = new Map();
   for (const s of core.skills) { if (!skillsByStudent.has(s.student_id)) skillsByStudent.set(s.student_id, new Map()); skillsByStudent.get(s.student_id).set(s.technique_id, s); }
-  const lt = await all(db, 'SELECT lesson_id, technique_id FROM lesson_techniques');
+  // Data de cada aula vem da própria tabela de aulas: uma aula sem presentes também conta como "técnica ensinada".
+  const [lt, lessonRows] = await Promise.all([all(db, 'SELECT lesson_id, technique_id FROM lesson_techniques'), all(db, 'SELECT id, date FROM lessons')]);
+  const lessonDate = new Map(lessonRows.map(l => [l.id, l.date]));
   const lessonTechs = new Map();
   for (const x of lt) { if (!lessonTechs.has(x.lesson_id)) lessonTechs.set(x.lesson_id, []); lessonTechs.get(x.lesson_id).push(x.technique_id); }
   const students = core.students.map(st => ({ ...st, metrics: studentMetrics(st, core, today, attByStudent, skillsByStudent, lessonTechs) }));
-  return { core, today, students, attByStudent, skillsByStudent, lessonTechs, lt };
+  return { core, today, students, attByStudent, skillsByStudent, lessonTechs, lt, lessonDate };
 }
 
 async function dashboard(db, C) {
@@ -301,9 +303,7 @@ async function dashboard(db, C) {
 }
 
 function techniqueStats(C) {
-  const { core, lt, skillsByStudent, today } = C;
-  const lessonsById = new Map();
-  for (const a of core.att) lessonsById.set(a.lesson_id, a.date);
+  const { core, lt, skillsByStudent, today, lessonDate: lessonsById } = C;
   return core.techniques.map(t => {
     const taught = lt.filter(x => x.technique_id === t.id);
     const levels = [];
