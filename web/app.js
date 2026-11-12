@@ -619,7 +619,7 @@ function renderLesson() {
     .sort((a, b) => (L.student_ids.has(b.id) - L.student_ids.has(a.id)) || (b.metrics.weekly_avg - a.metrics.weekly_avg) || a.name.localeCompare(b.name));
   const techs = S.techniques.filter(t => t.active && (!L.tq || norm(t.name).includes(norm(L.tq)) || norm(t.category).includes(norm(L.tq))));
   o.innerHTML = `<div class="full-screen" id="lesson-screen"><div class="app">
-    <div class="top"><button class="icon-btn" data-act="lesson-close" aria-label="Fechar">${I('left', 18)}</button><h1 style="font-size:20px">${L.id ? 'Editar chamada' : 'Chamada'}</h1>
+    <div class="top"><button class="icon-btn" data-act="lesson-close" aria-label="Fechar">${I('left', 18)}</button><h1 style="font-size:20px">${L.id ? (canUndo(L.created_by, L.created_at) ? 'Editar chamada' : 'Chamada (só leitura)') : 'Chamada'}</h1>
       ${L.id && canUndo(L.created_by, L.created_at) ? `<button class="icon-btn" data-act="lesson-delete" aria-label="Excluir aula">${I('trash', 17)}</button>` : '<span style="width:38px"></span>'}</div>
     <div class="card form-grid">
       <label class="field full"><span>Horário</span><select class="input" id="ls-class"><option value="">Aula avulsa</option>${S.classes.filter(c => c.active || c.id === L.class_id).map(c => `<option value="${c.id}" ${c.id === L.class_id ? 'selected' : ''}>${WDS[c.weekday]} ${c.start_time} · ${esc(c.name)}</option>`).join('')}</select></label>
@@ -640,7 +640,7 @@ function renderLesson() {
     <div class="list" style="max-height:320px;overflow:auto">${techs.map(t => `<button class="att ${L.technique_ids.has(t.id) ? 'on' : ''}" data-act="tech-toggle" data-id="${t.id}"><span class="box">${I('check', 15)}</span><div class="grow"><b class="small">${esc(t.name)}</b><div class="muted xs">${t.category} · ${cap(t.min_belt)}</div></div></button>`).join('')}</div>
     <label class="field" style="margin-top:12px"><span>Observações</span><textarea class="input" id="ls-notes" maxlength="2000" placeholder="Como foi a aula, quem precisa de atenção">${esc(L.notes || '')}</textarea></label>
     <p class="muted xs">Ao salvar, os alunos presentes passam a ter as técnicas da aula como “vistas em aula” (nível 1), sem rebaixar quem já tem nível maior.</p>
-    <div class="sticky-bar"><button class="btn block" data-act="lesson-save">${I('check', 16)} Salvar chamada (${L.student_ids.size})</button></div>
+    <div class="sticky-bar">${!L.id || canUndo(L.created_by, L.created_at) ? `<button class="btn block" data-act="lesson-save">${I('check', 16)} Salvar chamada (${L.student_ids.size})</button>` : '<p class="muted small" style="margin:0;text-align:center">Só o administrador altera chamadas de outra pessoa ou com 7 dias ou mais.</p>'}</div>
   </div></div>`;
   $('#lesson-screen').scrollTop = scroll;
   const bind = (sel, key) => { const el = $(sel); el.oninput = el.onchange = () => { L[key] = el.value; }; };
@@ -859,7 +859,7 @@ const ACT = {
     if (L.student_ids.has(id)) L.student_ids.delete(id); else L.student_ids.add(id);
     const on = L.student_ids.has(id); el.classList.toggle('on', on); el.setAttribute('aria-pressed', on);
     const n = L.student_ids.size; $('#ls-roll-row').style.display = n ? 'none' : ''; $('#att-count').textContent = `${n} presente${n === 1 ? '' : 's'}`;
-    $('[data-act=lesson-save]').innerHTML = `${I('check', 16)} Salvar chamada (${n})`;
+    const save = $('[data-act=lesson-save]'); if (save) save.innerHTML = `${I('check', 16)} Salvar chamada (${n})`;
   },
   'tech-toggle': el => { const L = S.ui.lesson, id = +el.dataset.id; if (L.technique_ids.has(id)) L.technique_ids.delete(id); else L.technique_ids.add(id); renderLesson(); },
   'class-edit': el => openClass(el.dataset.id),

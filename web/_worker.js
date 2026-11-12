@@ -437,7 +437,19 @@ const CLASS_FIELDS = b => {
   return o;
 };
 
+// Retrato de uma chamada para a auditoria (sem segredos): os campos da aula e as listas de presença e técnicas.
+async function lessonSnapshot(db, id) {
+  const l = await first(db, 'SELECT id, class_id, date, start_time, end_time, modality, title, notes, instructor_id, created_by, created_at, roll_called FROM lessons WHERE id = ?', id);
+  if (!l) return null;
+  l.student_ids = (await all(db, 'SELECT student_id FROM attendance WHERE lesson_id = ? ORDER BY student_id', id)).map(r => r.student_id);
+  l.technique_ids = (await all(db, 'SELECT technique_id FROM lesson_techniques WHERE lesson_id = ? ORDER BY technique_id', id)).map(r => r.technique_id);
+  return l;
+}
+
 async function saveLesson(db, staff, b, id) {
+  // Edição: o estado anterior vem do banco (nunca do cliente) e vai para a auditoria no mesmo batch da alteração.
+  const before = id ? await lessonSnapshot(db, id) : null;
+  if (id && !before) throw new HttpError(404, 'Aula não encontrada.');
   const cls = b.class_id ? await first(db, 'SELECT * FROM classes WHERE id = ?', b.class_id) : null;
   if (b.class_id && !cls) bad('Turma não encontrada.');
   const o = {
@@ -447,7 +459,8 @@ async function saveLesson(db, staff, b, id) {
     modality: oneOf(b.modality, ['gi', 'nogi', 'livre'], 'Modalidade', cls ? cls.modality : 'gi'),
     title: str(b.title, { max: 120, field: 'Tema da aula' }),
     notes: str(b.notes, { max: 2000, field: 'Observações' }),
-    instructor_id: b.instructor_id || (cls && cls.instructor_id) || staff.id
+    // Na edição, sem instrutor informado, o responsável registrado é mantido (corrigir a chamada de outra pessoa não troca o responsável).
+    instructor_id: b.instructor_id || (before ? before.instructor_id : (cls && cls.instructor_id) || staff.id)
   };
   if (!isTime(o.start_time) || !isTime(o.end_time) || o.end_time <= o.start_time) bad('Horário da aula inválido.');
   const studentIds = [...new Set(Array.isArray(b.student_ids) ? b.student_ids : [])];
@@ -469,14 +482,15 @@ async function saveLesson(db, staff, b, id) {
   // false = sem chamada); se não informado, aula nova começa "sem chamada" (0) e aula existente mantém o estado (inclusive desconhecido, NULL).
   const rollIn = b.roll_called === undefined || b.roll_called === null ? null : typeof b.roll_called === 'boolean' ? (b.roll_called ? 1 : 0) : bad('Chamada inválida.');
   if (rollIn === 0 && studentIds.length) bad('Há alunos presentes: a chamada não pode ser marcada como não realizada.');
-  const prev = id ? await first(db, 'SELECT roll_called FROM lessons WHERE id = ?', id) : null;
-  const roll = studentIds.length ? 1 : rollIn !== null ? rollIn : id ? (prev ? prev.roll_called : null) : 0;
+  const roll = studentIds.length ? 1 : rollIn !== null ? rollIn : id ? before.roll_called : 0;
   const stmts = [];
   if (id) {
     stmts.push(db.prepare('UPDATE lessons SET class_id=?, date=?, start_time=?, end_time=?, modality=?, title=?, notes=?, instructor_id=?, roll_called=? WHERE id=?')
       .bind(o.class_id, o.date, o.start_time, o.end_time, o.modality, o.title, o.notes, o.instructor_id, roll, id));
     stmts.push(db.prepare('DELETE FROM attendance WHERE lesson_id = ?').bind(id));
     stmts.push(db.prepare('DELETE FROM lesson_techniques WHERE lesson_id = ?').bind(id));
+    stmts.push(audit(db, 'lesson_updated', staff.id, JSON.stringify({ lesson_id: id, before,
+      after: { ...o, roll_called: roll, student_ids: studentIds.slice().sort(), technique_ids: techIds.slice().sort((x, y) => x - y) } })));
   } else {
     id = uuid();
     stmts.push(db.prepare('INSERT INTO lessons (id, class_id, date, start_time, end_time, modality, title, notes, instructor_id, created_by, roll_called) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
@@ -680,12 +694,13 @@ async function route(req, env, url, ctx) {
   const me = await currentStaff(req, db, ctx);
   if (!me) throw new HttpError(401, 'Sessão expirada. Entre novamente.');
   // Matriz de acesso (ver README, "Perfis"). Professor faz o dia a dia; o que está marcado com admin() é só do administrador.
-  // Excluir chamada e desfazer graduação: o professor só mexe no que ele mesmo registrou nos últimos OWN_DAYS dias.
+  // Editar ou excluir chamada e desfazer graduação: o professor só mexe no que ele mesmo registrou há menos de OWN_DAYS dias.
   const admin = () => { if (me.role !== 'admin') throw new HttpError(403, 'Apenas o administrador pode fazer isso.'); };
   const OWN_DAYS = 7;
   const ownRecent = (staffId, createdAt, what) => {
     if (me.role === 'admin') return;
-    if (staffId !== me.id || Date.now() - Date.parse(createdAt) > OWN_DAYS * 864e5) throw new HttpError(403, `Só o administrador exclui ${what} de outra pessoa ou com mais de ${OWN_DAYS} dias.`);
+    // Autoria e idade vêm do registro no banco (created_by, created_at), nunca do corpo da requisição. Com OWN_DAYS dias ou mais: negado.
+    if (staffId !== me.id || !(Date.now() - Date.parse(createdAt) < OWN_DAYS * 864e5)) throw new HttpError(403, `Só o administrador altera ou exclui ${what} de outra pessoa ou com ${OWN_DAYS} dias ou mais.`);
   };
   let m;
 
@@ -800,8 +815,14 @@ async function route(req, env, url, ctx) {
     if (method === 'GET') return json(await lessonOut(db, m[1]));
     const ex = await first(db, 'SELECT id, created_by, created_at FROM lessons WHERE id = ?', m[1]);
     if (!ex) throw new HttpError(404, 'Aula não encontrada.');
-    if (method === 'PUT') { await saveLesson(db, me, await body(), m[1]); return json(await lessonOut(db, m[1])); }
-    if (method === 'DELETE') { ownRecent(ex.created_by, ex.created_at, 'chamadas'); await run(db, 'DELETE FROM lessons WHERE id = ?', m[1]); return json({ ok: true }); }
+    // V3: a edição substitui a lista de presença inteira, então segue a MESMA regra da exclusão (autor + menos de OWN_DAYS dias, ou admin).
+    if (method === 'PUT') { ownRecent(ex.created_by, ex.created_at, 'chamadas'); await saveLesson(db, me, await body(), m[1]); return json(await lessonOut(db, m[1])); }
+    if (method === 'DELETE') {
+      ownRecent(ex.created_by, ex.created_at, 'chamadas');
+      const before = await lessonSnapshot(db, m[1]);
+      await db.batch([audit(db, 'lesson_deleted', me.id, JSON.stringify({ lesson_id: m[1], before })), db.prepare('DELETE FROM lessons WHERE id = ?').bind(m[1])]);
+      return json({ ok: true });
+    }
   }
 
   // ---------- técnicas ----------
