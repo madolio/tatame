@@ -1,1 +1,12 @@
-{"type":"module"}
+{
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node tests/api_test.mjs",
+    "test:e2e": "node tests/e2e.mjs",
+    "test:all": "node tests/api_test.mjs && node tests/e2e.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.50.0"
+  }
+}

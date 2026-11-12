@@ -1,12 +1,14 @@
 import { createRequire } from 'node:module';
-import fs from 'node:fs'; import path from 'node:path'; import assert from 'node:assert';
+import fs from 'node:fs'; import path from 'node:path'; import os from 'node:os'; import assert from 'node:assert'; import { fileURLToPath } from 'node:url';
 import { makeD1 } from './d1shim.mjs';
 const require = createRequire(import.meta.url);
-const { chromium } = require('/opt/npm-tools/node_modules/playwright');
+// Navegador: TATAME_CHROME aponta para um Chrome/Chromium local (usa playwright-core); sem ele, usa o pacote playwright.
+const { chromium } = require(process.env.TATAME_CHROME ? 'playwright-core' : 'playwright');
+const launch = () => chromium.launch(process.env.TATAME_CHROME ? { executablePath: process.env.TATAME_CHROME } : {});
 const W = (await import('../web/_worker.js')).default;
-const ROOT = new URL('..', import.meta.url).pathname, WEB = path.join(ROOT, 'web'), SHOTS = '/tmp/tatame-shots';
+const ROOT = fileURLToPath(new URL('..', import.meta.url)), WEB = path.join(ROOT, 'web'), SHOTS = path.join(os.tmpdir(), 'tatame-shots');
 fs.rmSync(SHOTS, { recursive: true, force: true }); fs.mkdirSync(SHOTS, { recursive: true });
-const DB = makeD1(); DB.load(ROOT + 'db/schema.sql'); DB.load(ROOT + 'db/seed_tecnicas.sql'); DB.raw.exec("INSERT INTO settings (key, value) VALUES ('setup_token', 'K7Q2-TATAME')");
+const DB = makeD1(); DB.load(path.join(ROOT, 'db/schema.sql')); DB.load(path.join(ROOT, 'db/seed_tecnicas.sql')); DB.raw.exec("INSERT INTO settings (key, value) VALUES ('setup_token', 'K7Q2-TATAME')");
 const TYPES = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json' };
 const env = { DB, ASSETS: { fetch: async req => { const u = new URL(req.url); const f = path.join(WEB, u.pathname === '/' ? 'index.html' : u.pathname); return fs.existsSync(f) && !f.endsWith('_worker.js') ? new Response(fs.readFileSync(f), { headers: { 'content-type': TYPES[path.extname(f)] || 'text/plain' } }) : new Response('nf', { status: 404 }); } } };
 const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date());
@@ -19,7 +21,7 @@ const api = async (method, p, body) => {
   const j = await r.json(); if (!r.ok) throw new Error(p + ' ' + JSON.stringify(j)); return j;
 };
 
-const browser = await chromium.launch();
+const browser = await launch();
 const ctx = await browser.newContext({ viewport: { width: 400, height: 860 }, deviceScaleFactor: 2 });
 const errors = [];
 await ctx.route('**/*', async route => {

@@ -1,8 +1,9 @@
 import assert from 'node:assert';
+import { fileURLToPath } from 'node:url';
 import { makeD1 } from './d1shim.mjs';
 const W = (await import('../web/_worker.js')).default;
 const DB = makeD1();
-DB.load(new URL('../db/schema.sql', import.meta.url).pathname); DB.load(new URL('../db/seed_tecnicas.sql', import.meta.url).pathname);
+DB.load(fileURLToPath(new URL('../db/schema.sql', import.meta.url))); DB.load(fileURLToPath(new URL('../db/seed_tecnicas.sql', import.meta.url)));
 const env = { DB, ASSETS: { fetch: () => new Response('static') } };
 let cookie = '';
 const call = async (method, path, body, { csrf = true, ck = cookie } = {}) => {

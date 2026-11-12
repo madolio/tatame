@@ -1,10 +1,13 @@
 // Gera uma academia fictícia (via API real, sobre D1 local) e exporta como SQL para o D1 de produção.
 // Tudo marcado com notes = '[teste]' para poder apagar depois.
 import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { makeD1 } from './d1shim.mjs';
 const W = (await import('../web/_worker.js')).default;
-const ROOT = new URL('..', import.meta.url).pathname;
-const DB = makeD1(); DB.load(ROOT + 'db/schema.sql'); DB.load(ROOT + 'db/seed_tecnicas.sql');
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
+const OUT = path.join(ROOT, 'fake_data.sql');
+const DB = makeD1(); DB.load(path.join(ROOT, 'db/schema.sql')); DB.load(path.join(ROOT, 'db/seed_tecnicas.sql'));
 const env = { DB, ASSETS: { fetch: () => new Response('') } };
 let cookie = '';
 const api = async (method, p, body) => {
@@ -118,8 +121,8 @@ const out = [
   ...dump('students'), ...dump('classes', ['instructor_id']), ...dump('lessons', ['instructor_id', 'created_by']), ...dump('attendance'), ...dump('lesson_techniques'),
   ...dump('skills', ['updated_by']), ...dump('skill_history', ['staff_id']).map(s => s.replace(/INSERT INTO skill_history \(id,/, 'INSERT INTO skill_history (').replace(/VALUES \(\d+,/, 'VALUES (')), ...dump('promotions', ['staff_id'])
 ];
-fs.writeFileSync('/home/claude/tatame/fake_data.sql', out.join('\n') + '\n');
+fs.writeFileSync(OUT, out.join('\n') + '\n');
 const st = (await api('GET', '/api/state')).dashboard;
-console.log('linhas SQL:', out.length, '| bytes:', fs.statSync('/home/claude/tatame/fake_data.sql').size);
+console.log('linhas SQL:', out.length, '| bytes:', fs.statSync(OUT).size);
 console.log('kpis:', JSON.stringify(st.kpis), '| aptos:', st.ready_list.length, '| quase:', st.near_list.length, '| risco:', st.risk_list.length);
 for (const t of ['students', 'classes', 'lessons', 'attendance', 'skills', 'promotions']) console.log(t, DB.raw.prepare(`select count(*) n from ${t}`).get().n);
