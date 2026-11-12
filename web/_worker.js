@@ -19,6 +19,16 @@ const EXPERIENCE = [[0, 'Novato'], [30, 'Iniciante'], [100, 'Intermediário'], [
 const LEARNING = [[0, 'Inicial'], [20, 'Básico'], [40, 'Intermediário'], [60, 'Avançado'], [80, 'Domínio']];
 const SKILL_LABELS = ['Não visto', 'Visto em aula', 'Executa com ajuda', 'Executa sozinho', 'Aplica no rola', 'Domina e ensina'];
 
+// Limites operacionais (V4). Escolhidos acima do uso real, abaixo do que sobrecarrega o D1:
+//   BODY_MAX     corpo JSON: o maior pedido legítimo medido (100 avaliações com observação longa multibyte) tem ~63 KB;
+//                uma chamada com 300 alunos tem ~12 KB. 256 KB deixa folga de 4x.
+//   LESSON_*     uma chamada com mais de 300 presentes ou 40 técnicas não existe na prática de uma academia.
+//   SKILLS_MAX   a tela manda 1 avaliação por vez; o lote é só da API (o catálogo inicial tem 70 técnicas).
+//   RULES_MAX    uma regra por faixa (9 faixas), sem repetir faixa.
+// As listas vão ao banco como UM parâmetro JSON (json_each): o número de comandos e de parâmetros não cresce com a lista
+// (o D1 limita parâmetros por consulta; IN (?, ?, …) com 300 itens passaria desse limite).
+const BODY_MAX = 256 * 1024, LESSON_STUDENTS_MAX = 300, LESSON_TECHS_MAX = 40, SKILLS_MAX = 100, RULES_MAX = 9;
+
 const SECURITY_HEADERS = {
   'x-content-type-options': 'nosniff', 'x-frame-options': 'DENY', 'referrer-policy': 'strict-origin-when-cross-origin',
   'content-security-policy': "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
@@ -465,14 +475,14 @@ async function saveLesson(db, staff, b, id) {
   if (!isTime(o.start_time) || !isTime(o.end_time) || o.end_time <= o.start_time) bad('Horário da aula inválido.');
   const studentIds = [...new Set(Array.isArray(b.student_ids) ? b.student_ids : [])];
   const techIds = [...new Set((Array.isArray(b.technique_ids) ? b.technique_ids : []).map(Number))];
-  if (studentIds.length > 300 || techIds.length > 40) bad('Lista grande demais.');
-  if (studentIds.length) {
-    const found = await all(db, `SELECT id FROM students WHERE id IN (${studentIds.map(() => '?').join(',')})`, ...studentIds);
-    if (found.length !== studentIds.length) bad('Algum aluno da chamada não existe.');
-  }
-  if (techIds.length) {
-    const found = await all(db, `SELECT id FROM techniques WHERE id IN (${techIds.map(() => '?').join(',')})`, ...techIds);
-    if (found.length !== techIds.length) bad('Alguma técnica não existe.');
+  if (studentIds.length > LESSON_STUDENTS_MAX) bad(`A chamada aceita no máximo ${LESSON_STUDENTS_MAX} alunos.`);
+  if (techIds.length > LESSON_TECHS_MAX) bad(`A aula aceita no máximo ${LESSON_TECHS_MAX} técnicas.`);
+  const sJson = JSON.stringify(studentIds), tJson = JSON.stringify(techIds);
+  // Uma consulta confere alunos e técnicas de uma vez (antes: uma consulta com um parâmetro por item).
+  if (studentIds.length || techIds.length) {
+    const f = await first(db, 'SELECT (SELECT count(*) FROM students WHERE id IN (SELECT value FROM json_each(?))) s, (SELECT count(*) FROM techniques WHERE id IN (SELECT value FROM json_each(?))) t', sJson, tJson);
+    if (f.s !== studentIds.length) bad('Algum aluno da chamada não existe.');
+    if (f.t !== techIds.length) bad('Alguma técnica não existe.');
   }
   if (o.class_id) {
     const dup = await first(db, 'SELECT id FROM lessons WHERE class_id = ? AND date = ? AND id <> ?', o.class_id, o.date, id || '');
@@ -496,13 +506,14 @@ async function saveLesson(db, staff, b, id) {
     stmts.push(db.prepare('INSERT INTO lessons (id, class_id, date, start_time, end_time, modality, title, notes, instructor_id, created_by, roll_called) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
       .bind(id, o.class_id, o.date, o.start_time, o.end_time, o.modality, o.title, o.notes, o.instructor_id, staff.id, roll));
   }
-  for (const s of studentIds) stmts.push(db.prepare('INSERT INTO attendance (lesson_id, student_id) VALUES (?, ?)').bind(id, s));
-  for (const t of techIds) stmts.push(db.prepare('INSERT INTO lesson_techniques (lesson_id, technique_id) VALUES (?, ?)').bind(id, t));
-  // Quem estava na aula passa a ter a técnica como "vista em aula" (nível 1), sem rebaixar ninguém.
-  for (const s of studentIds) for (const t of techIds) {
-    stmts.push(db.prepare(`INSERT INTO skills (student_id, technique_id, level, updated_by) VALUES (?, ?, 1, ?)
-      ON CONFLICT (student_id, technique_id) DO UPDATE SET level = 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), updated_by = excluded.updated_by WHERE skills.level < 1`).bind(s, t, staff.id));
-  }
+  // Presenças, técnicas e "vista em aula" em 3 comandos fixos, qualquer que seja o tamanho das listas (antes: 1 comando
+  // por aluno + 1 por técnica + 1 por aluno x técnica). Mesmo resultado: quem estava na aula passa a ter cada técnica
+  // como "vista em aula" (nível 1), sem rebaixar ninguém.
+  if (studentIds.length) stmts.push(db.prepare('INSERT INTO attendance (lesson_id, student_id) SELECT ?, value FROM json_each(?)').bind(id, sJson));
+  if (techIds.length) stmts.push(db.prepare('INSERT INTO lesson_techniques (lesson_id, technique_id) SELECT ?, value FROM json_each(?)').bind(id, tJson));
+  if (studentIds.length && techIds.length) stmts.push(db.prepare(`INSERT INTO skills (student_id, technique_id, level, updated_by)
+      SELECT s.value, t.value, 1, ? FROM json_each(?) s, json_each(?) t WHERE true
+      ON CONFLICT (student_id, technique_id) DO UPDATE SET level = 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), updated_by = excluded.updated_by WHERE skills.level < 1`).bind(staff.id, sJson, tJson));
   await db.batch(stmts);
   return id;
 }
@@ -573,7 +584,14 @@ async function route(req, env, url, ctx) {
   const db = env.DB;
   if (!db) throw new HttpError(500, 'Banco de dados não configurado (binding DB).');
   const method = req.method, path = url.pathname.replace(/\/+$/, '');
-  const body = async () => { try { return await req.json(); } catch { bad('Corpo da requisição inválido.'); } };
+  // Corpo limitado ANTES de ler tudo (Content-Length) e depois de ler (corpo sem Content-Length / chunked): 413.
+  const body = async () => {
+    const declared = Number(req.headers.get('content-length'));
+    if (Number.isFinite(declared) && declared > BODY_MAX) throw new HttpError(413, 'Requisição grande demais.');
+    let text; try { text = await req.text(); } catch { bad('Corpo da requisição inválido.'); }
+    if (enc.encode(text).length > BODY_MAX) throw new HttpError(413, 'Requisição grande demais.');
+    try { return JSON.parse(text); } catch { bad('Corpo da requisição inválido.'); }
+  };
 
   // CSRF: toda escrita precisa do cabeçalho do app (navegadores não o enviam em formulários de outros sites).
   if (method !== 'GET' && req.headers.get('x-tatame') !== '1') throw new HttpError(403, 'Requisição bloqueada.');
@@ -756,18 +774,21 @@ async function route(req, env, url, ctx) {
     const st = await first(db, 'SELECT id FROM students WHERE id = ?', m[1]);
     if (!st) throw new HttpError(404, 'Aluno não encontrado.');
     const items = Array.isArray(b.items) ? b.items : [b];
-    if (!items.length || items.length > 100) bad('Nenhuma avaliação enviada.');
-    const stmts = [];
-    for (const it of items) {
-      const tid = int(it.technique_id, 1, 1e9, 'Técnica', true), level = int(it.level, 0, 5, 'Nível', true);
-      const t = await first(db, 'SELECT id FROM techniques WHERE id = ?', tid);
-      if (!t) bad('Técnica não encontrada.');
-      const note = str(it.note, { max: 300, field: 'Observação' });
-      stmts.push(db.prepare(`INSERT INTO skills (student_id, technique_id, level, note, updated_by) VALUES (?,?,?,?,?)
-        ON CONFLICT (student_id, technique_id) DO UPDATE SET level = excluded.level, note = excluded.note, updated_by = excluded.updated_by, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')`).bind(m[1], tid, level, note, me.id));
-      stmts.push(db.prepare('INSERT INTO skill_history (student_id, technique_id, level, staff_id) VALUES (?,?,?,?)').bind(m[1], tid, level, me.id));
-    }
-    await db.batch(stmts);
+    if (!items.length) bad('Nenhuma avaliação enviada.');
+    if (items.length > SKILLS_MAX) bad(`No máximo ${SKILLS_MAX} avaliações por vez.`);
+    // Valida tudo em memória; depois UMA consulta confere as técnicas e 2 comandos gravam o lote inteiro (antes: 1 consulta
+    // por item + 2 comandos por item). Técnica repetida no mesmo lote é recusada (antes: a última vencia, em silêncio).
+    const rows = items.map(it => ({ t: int(it.technique_id, 1, 1e9, 'Técnica', true), l: int(it.level, 0, 5, 'Nível', true), n: str(it.note, { max: 300, field: 'Observação' }) }));
+    if (new Set(rows.map(r => r.t)).size !== rows.length) bad('A mesma técnica aparece mais de uma vez.');
+    const rJson = JSON.stringify(rows);
+    const found = await first(db, "SELECT count(*) n FROM techniques WHERE id IN (SELECT json_extract(value, '$.t') FROM json_each(?))", rJson);
+    if (found.n !== rows.length) bad('Técnica não encontrada.');
+    await db.batch([
+      db.prepare(`INSERT INTO skills (student_id, technique_id, level, note, updated_by)
+        SELECT ?, json_extract(value, '$.t'), json_extract(value, '$.l'), json_extract(value, '$.n'), ? FROM json_each(?) WHERE true
+        ON CONFLICT (student_id, technique_id) DO UPDATE SET level = excluded.level, note = excluded.note, updated_by = excluded.updated_by, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')`).bind(m[1], me.id, rJson),
+      db.prepare("INSERT INTO skill_history (student_id, technique_id, level, staff_id) SELECT ?, json_extract(value, '$.t'), json_extract(value, '$.l'), ? FROM json_each(?) ORDER BY key").bind(m[1], me.id, rJson)
+    ]);
     return json(await studentDetail(db, m[1]));
   }
   if ((m = path.match(/^\/api\/promotions\/([0-9a-f-]{36})$/)) && method === 'DELETE') {
@@ -862,9 +883,13 @@ async function route(req, env, url, ctx) {
   if (path === '/api/rules' && method === 'PUT') {
     admin();
     const b = await body();
-    const stmts = [];
-    for (const r of (Array.isArray(b.rules) ? b.rules : [])) {
+    if (!Array.isArray(b.rules) || !b.rules.length) bad('Nada para salvar.');
+    if (b.rules.length > RULES_MAX) bad(`No máximo ${RULES_MAX} regras (uma por faixa).`);
+    const stmts = [], seen = new Set();
+    for (const r of b.rules) {
+      if (!r || typeof r !== 'object' || Array.isArray(r)) bad('Regra inválida.');
       const belt = oneOf(r.belt, BELTS, 'Faixa'); if (!belt) bad('Faixa inválida.');
+      if (seen.has(belt)) bad(`A faixa ${belt} aparece mais de uma vez.`); seen.add(belt);
       const isBlack = belt === 'preta';
       stmts.push(db.prepare('UPDATE rules SET degree_months=?, degree_classes=?, belt_months=?, belt_classes=?, curriculum_pct=?, next_min_age=? WHERE belt=?').bind(
         real(r.degree_months, 0, 120, `Meses entre graus (${belt})`) ?? bad(`Meses entre graus (${belt}) é obrigatório.`),
