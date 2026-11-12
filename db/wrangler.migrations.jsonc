@@ -1,0 +1,29 @@
+// Configuração do wrangler SOMENTE para migrações e consultas do D1, usada explicitamente com
+//   -c db/wrangler.migrations.jsonc --env <staging|restore-test|production>
+// pelo wrapper tools/db.mjs. NÃO é configuração do Cloudflare Pages:
+//   - não tem `pages_build_output_dir` (com essa chave o arquivo viraria a fonte da verdade do projeto Pages
+//     e substituiria os bindings definidos no painel);
+//   - fica em db/, fora da raiz e de web/, para nenhum `wrangler pages deploy` encontrá-lo;
+//   - não tem binding no nível de cima: sem --env, não aponta para banco nenhum.
+// Nome e database_id devem ser IGUAIS aos de db/environments.json (o wrapper confere e recusa se diferirem).
+// "PENDENTE" = banco ainda não criado/conhecido; o wrapper recusa qualquer operação nesse ambiente.
+{
+  "name": "tatame-db-ops",
+  "env": {
+    "staging": {
+      "d1_databases": [
+        { "binding": "DB", "database_name": "tatame-staging", "database_id": "PENDENTE", "migrations_dir": "migrations", "migrations_table": "d1_migrations" }
+      ]
+    },
+    "restore-test": {
+      "d1_databases": [
+        { "binding": "DB", "database_name": "tatame-restore-test", "database_id": "PENDENTE", "migrations_dir": "migrations", "migrations_table": "d1_migrations" }
+      ]
+    },
+    "production": {
+      "d1_databases": [
+        { "binding": "DB", "database_name": "PENDENTE", "database_id": "PENDENTE", "migrations_dir": "migrations", "migrations_table": "d1_migrations" }
+      ]
+    }
+  }
+}
