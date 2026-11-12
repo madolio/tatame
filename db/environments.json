@@ -1,0 +1,27 @@
+{
+  "_leia": "Ambientes do banco. Sem segredos: nome e database_id do D1 não são credenciais. 'PENDENTE' = ainda não conhecido; o wrapper (tools/db.mjs) recusa qualquer operação num ambiente pendente. Preencha só com valores copiados de `wrangler d1 info <nome>` ou do painel, nunca inventados. Ver docs/operacao-banco.md.",
+  "local": {
+    "kind": "local",
+    "descricao": "Arquivo SQLite local (node:sqlite), informado com --sqlite <arquivo>. Nunca acessa a rede."
+  },
+  "staging": {
+    "kind": "remote",
+    "database_name": "tatame-staging",
+    "database_id": "PENDENTE",
+    "descricao": "Ensaios de migração com dados ANONIMIZADOS. Aceita import apenas de backup anonimizado."
+  },
+  "restore-test": {
+    "kind": "remote",
+    "database_name": "tatame-restore-test",
+    "database_id": "PENDENTE",
+    "disposable": true,
+    "descricao": "Descartável: prova que um backup restaura. Backup com dados pessoais reais exige autorização específica."
+  },
+  "production": {
+    "kind": "remote",
+    "database_name": "PENDENTE",
+    "database_id": "PENDENTE",
+    "protected": true,
+    "descricao": "Produção. Exige --confirm-production=<nome exato> e terminal interativo; nunca é destino de import/restore-test."
+  }
+}
