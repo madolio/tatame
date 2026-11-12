@@ -50,16 +50,10 @@ Dois indicadores diferentes:
 
 ## 3. Graduação
 
-### Tempo — item 8
-`months_in_belt`, `training_months` e o critério de tempo usam **meses**. Duas definições:
+### Tempo — item 8 [aprovado e aplicado: meses-calendário]
+`months_in_belt`, `training_months` e o critério de tempo usam **meses-calendário**: meses completos desde a data inicial (aniversário mensal; 31/01 + 1 mês = 28/02) mais a fração do mês parcial em dias (dias decorridos ÷ dias entre os dois aniversários). Ex.: 31/01 → 30/04 = 3,0 meses exatos; 31/01 → 01/03 = 1,03. Valores nunca são negativos (data inicial futura conta 0).
 
-| Definição | Fórmula | Exemplo 31/01 → 01/03 |
-|---|---|---|
-| **Meses-calendário** (referência) | meses completos (aniversário, com ajuste para fim de mês) + dias do mês parcial ÷ dias desse mês | 1,03 |
-| **Meses aproximados por dias** (atual) | `(Δ anos × 12 + Δ meses) + (Δ dia do mês) ÷ 30,44` | 1,01 |
-
-As duas diferem em até ~0,1 mês. O critério (`met`) só muda quando a data cai exatamente na fronteira (ex.: 31/01 → 30/04, alvo 3 meses: calendário completa 3 meses, aproximação dá 2,97). **Tolerância adotada na comparação:** 0,15 mês nos valores de meses, 5 pontos em `progress`; `met`/`ready` são comparados sem tolerância e as diferenças de fronteira ficam catalogadas.
-**Recomendação (a decidir):** adotar meses-calendário. É a leitura natural de "faz 3 meses que recebeu o grau", é explicável ao aluno e não depende de uma constante (30,44). Custo: trocar `monthsBetween` por uma função de calendário, com teste de paridade.
+Antes, o Worker usava `(Δ anos × 12 + Δ meses) + (Δ dia do mês) ÷ 30,44`, que diferia em até ~0,1 mês e reprovava quem completava o período exatamente numa fronteira de fim de mês (31/01 → 30/04 dava 2,97 contra a meta de 3). `ready` e `met` são comparados sem tolerância.
 
 ### Próxima graduação
 - Faixa com `degrees < máx` (4; preta 6): **grau**; critérios: tempo desde o último grau ≥ `degree_months`; aulas desde o último grau ≥ `degree_classes` (quando > 0). Aulas desde o último grau = presenças com data ≥ `degree_since` + `imported_classes_degree`.
@@ -123,26 +117,24 @@ O marcador `lessons.roll_called` (migração `db/migrations/002_marcador_de_cham
 - **Ordem de implantação:** aplicar a migração 002 **uma vez** (o SQLite não torna `ADD COLUMN` idempotente) antes de publicar o Worker que lê/grava a coluna. Reversão: `002_marcador_de_chamada.down.sql` (remove a coluna; aulas e presenças ficam). Fazer `wrangler d1 export` antes.
 
 ## 6. Decisões que ainda dependem de aprovação
-1. Adotar meses-calendário no lugar da aproximação por 30,44 dias (item 8).
-2. Aplicar cada regra provisória ao Worker, uma por vez, com o teste de paridade como prova.
+1. (nenhuma decisão de cálculo pendente; ver o relatório de entrega)
 
 ## 7. Paridade: como é verificada
 
 `node tests/parity.mjs` (também em `npm test`) compara, campo a campo, o Worker real com `tests/ref/reference.mjs`, uma implementação independente (aritmética de datas própria, sem importar nada de `web/`).
 
-- **Relógio fixo:** o teste congela `Date` (12:00 de Brasília) para o resultado não depender do dia da execução. O Worker não foi alterado.
+- **Relógio fixo:** o teste congela `Date` (12:00 de Brasília) para o resultado não depender do dia da execução (só nos testes; o Worker usa o relógio real).
 - **Dados:** (1) cenário manual com 35 alunos, cada um ilustrando um caso (sem presença, aula antes do início ou da faixa, janelas de 29/30/83/84/89/90 dias, trancado e inativo, início no futuro, sem nascimento, faixas infantis, graduações feitas pela API real, inclusive desfazer), executado em duas datas (17/06/2026 e 30/04/2026, esta para a fronteira de fim de mês); (2) conjunto gerado com semente fixa (45 alunos, 181 aulas, 1.793 presenças); (3) banco vazio.
-- **Passe A (fidelidade):** referência com o comportamento atual. Deve coincidir com o Worker em tudo, exceto na fronteira de fim de mês do item 8. Resultado: 0 divergências em ~6.200 campos fora essa fronteira. É a prova de que a referência entendeu o Worker.
-- **Passe B (regras provisórias):** divergências esperadas, catalogadas em `tests/ref/divergencias.json` com classe, evidência e **contagem exata**. O teste falha se surgir divergência fora do catálogo, se uma contagem mudar ou se uma entrada deixar de ocorrer; ninguém "faz passar" mudando um número sem rever a evidência.
-- **Tolerâncias:** 0,15 mês nos valores de meses (0,1 de diferença de definição + 0,05 de arredondamento) e 5 pontos em `progress`. `met`, `ready` e todas as contagens são exatas.
+- **Passe A (fidelidade):** referência com o comportamento então vigente; usado enquanto havia regras pendentes. Hoje coincide com o passe B.
+- **Passe B (regras aprovadas):** divergências do Worker em relação à referência. Todas as regras aprovadas foram aplicadas, uma por commit, e o catálogo `tests/ref/divergencias.json` está **vazio**: a comparação é exata em ~13.000 campos. Se uma divergência voltar, o teste falha; uma divergência futura aceita deve ser catalogada com classe, evidência e contagem exata.
+- **Sem tolerâncias:** valores de meses, `progress`, `met`, `ready` e contagens são comparados exatamente. (A tolerância de 0,15 mês/5 pontos usada antes escondia um erro real: o Worker calculava `progress` com o valor já arredondado a 1 casa; agora usa o valor exato.)
 - **Evolução de faixa e grau:** as invariantes da seção 3 são conferidas contra a tabela de graduações dos alunos promovidos e desfeitos pela API. Nenhuma inconsistência encontrada.
 - **Sensibilidade:** com um erro de uma linha no Worker (janela de 30 dias virando 29), a suíte falhou apontando aluno, campo e valores; o arquivo foi restaurado em seguida.
 
-### Divergências do passe B (cada uma com evidência reproduzível em `node tests/parity.mjs --detalhe`)
+### Divergências do passe B (histórico: cada regra foi aplicada em um commit e saiu do catálogo)
 
 | Regra | Efeito observado | Classe |
 |---|---|---|
-| item 8 | 31/01 → 30/04, alvo de 3 meses: calendário cumpre, aproximação dá 2,97 | tolerância |
 
 Sem divergência: janelas de 30, 84 e 90 dias, última aula, contagens por faixa e por semana, ocupação por turma, mapa de calor (contagens), técnicas, currículo e aprendizado, critérios de graduação, desfazer graduação.
 

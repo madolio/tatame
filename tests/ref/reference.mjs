@@ -82,7 +82,7 @@ export function computeReference(data, today, opts = {}) {
     let next = null;
     if (st.degrees < maxDeg) {
       next = { kind: 'grau', to_belt: st.belt, to_degrees: st.degrees + 1 };
-      add('months', calendarMonths(st.degree_since, today), r.degree_months);
+      add('months', Math.max(0, calendarMonths(st.degree_since, today)), r.degree_months);
       if (r.degree_classes > 0) add('classes', sinceDegree, r.degree_classes);
     } else if (st.belt !== 'preta') {
       let nb;
@@ -90,7 +90,7 @@ export function computeReference(data, today, opts = {}) {
       else if (isKidBelt(st.belt)) nb = age === null ? (st.belt === 'verde' ? 'azul' : KIDS[KIDS.indexOf(st.belt) + 1]) : (age < 16 && st.belt !== 'verde' ? KIDS[KIDS.indexOf(st.belt) + 1] : 'azul');
       else nb = ADULT[ADULT.indexOf(st.belt) + 1];
       next = { kind: 'faixa', to_belt: nb, to_degrees: 0 };
-      if (r.belt_months != null) add('months', calendarMonths(st.belt_since, today), r.belt_months);
+      if (r.belt_months != null) add('months', Math.max(0, calendarMonths(st.belt_since, today)), r.belt_months);
       if (r.belt_classes != null) add('classes', sinceBelt, r.belt_classes);
       if (r.curriculum_pct != null) add('curriculum', currPct, r.curriculum_pct);
       const minAge = nb === null ? null : (st.belt === 'branca' && nb === 'cinza') ? 4 : (nb === 'azul' && (st.belt === 'branca' || isKidBelt(st.belt))) ? 16 : r.next_min_age;
@@ -105,7 +105,7 @@ export function computeReference(data, today, opts = {}) {
       name: st.name, status: st.status, age, classes_total: total, last_attendance: last, days_absent: daysAbsent, at_risk: atRisk,
       classes_last_30d: rows.filter(r2 => within(30, r2)).length, weekly_avg: r1(num84, weeks), mat_hours: r1(rows.reduce((t, x) => t + x.mins, 0), 60),
       classes_since_degree: sinceDegree, classes_since_belt: sinceBelt,
-      months_in_belt: round1(calendarMonths(st.belt_since, today)),
+      months_in_belt: round1(Math.max(0, calendarMonths(st.belt_since, today))),
       training_months: round1(Math.max(0, calendarMonths(st.start_date, today)) + (st.prior_months || 0)),
       experience: { score: expScore, in_belt: sinceBelt, level: expIdx + 1, label: EXPERIENCE[expIdx][1] },
       learning: { pct: learnPct, level: levelOf(LEARNING, learnPct) + 1, label: LEARNING[levelOf(LEARNING, learnPct)][1], curriculum_size: curr.length, mastered, curriculum_pct: currPct },

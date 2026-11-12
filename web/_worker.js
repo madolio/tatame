@@ -36,9 +36,21 @@ const isDate = s => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !i
 const isTime = s => typeof s === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(s);
 const dnum = s => Date.parse(s + 'T00:00:00Z') / 864e5;
 const daysBetween = (a, b) => Math.round(dnum(b) - dnum(a));
+// Meses-calendário: meses completos desde `a` (aniversário mensal; 31/01 + 1 mês = 28/02) + fração do mês parcial em dias.
+// Ex.: 31/01 → 30/04 = 3,0 meses exatos (a aproximação por 30,44 dias dava 2,97 e reprovava o critério de 3 meses).
+const addMonthsClamp = (s, n) => {
+  const [y, m, d] = s.split('-').map(Number), t = y * 12 + (m - 1) + n, ny = Math.floor(t / 12), nm = t - ny * 12 + 1;
+  const last = new Date(Date.UTC(ny, nm, 0)).getUTCDate();
+  return `${String(ny).padStart(4, '0')}-${String(nm).padStart(2, '0')}-${String(Math.min(d, last)).padStart(2, '0')}`;
+};
 const monthsBetween = (a, b) => {
-  const [y1, m1, d1] = a.split('-').map(Number), [y2, m2, d2] = b.split('-').map(Number);
-  return (y2 - y1) * 12 + (m2 - m1) + (d2 - d1) / 30.44;
+  if (dnum(b) < dnum(a)) return -monthsBetween(b, a);
+  const [y1, m1] = a.split('-').map(Number), [y2, m2] = b.split('-').map(Number);
+  let n = (y2 - y1) * 12 + (m2 - m1);
+  while (dnum(addMonthsClamp(a, n)) > dnum(b)) n--;
+  while (dnum(addMonthsClamp(a, n + 1)) <= dnum(b)) n++;
+  const from = dnum(addMonthsClamp(a, n));
+  return n + (dnum(b) - from) / (dnum(addMonthsClamp(a, n + 1)) - from);
 };
 const ageOn = (birth, on) => {
   if (!birth) return null;
@@ -229,17 +241,18 @@ function studentMetrics(st, core, today, attByStudent, skillsByStudent, lessonTe
   const maxDeg = st.belt === 'preta' ? 6 : 4;
   let next = null;
   const crit = [];
-  const add = (key, label, current, target, unit) => crit.push({ key, label, current: Math.round(current * 10) / 10, target, unit, met: current >= target });
+  // `exact` guarda o valor sem arredondar: met e progress usam o exato; `current` (1 casa) é só para exibição.
+  const add = (key, label, current, target, unit) => crit.push({ key, label, current: Math.round(current * 10) / 10, target, unit, met: current >= target, exact: current });
   if (st.degrees < maxDeg) {
     next = { kind: 'grau', to_belt: st.belt, to_degrees: st.degrees + 1 };
-    add('months', 'Tempo desde o último grau', monthsBetween(st.degree_since, today), r.degree_months, 'meses');
+    add('months', 'Tempo desde o último grau', Math.max(0, monthsBetween(st.degree_since, today)), r.degree_months, 'meses');
     if (r.degree_classes > 0) add('classes', 'Aulas desde o último grau', sinceDegree, r.degree_classes, 'aulas');
   } else {
     const nb = nextBelt(st, age);
     if (nb !== null) {
       next = { kind: 'faixa', to_belt: nb || null, to_degrees: 0 };
       if (nb === undefined) next.choice_needed = true;
-      if (r.belt_months != null) add('months', 'Tempo na faixa', monthsBetween(st.belt_since, today), r.belt_months, 'meses');
+      if (r.belt_months != null) add('months', 'Tempo na faixa', Math.max(0, monthsBetween(st.belt_since, today)), r.belt_months, 'meses');
       if (r.belt_classes != null) add('classes', 'Aulas na faixa', sinceBelt, r.belt_classes, 'aulas');
       if (r.curriculum_pct != null) add('curriculum', 'Currículo dominado (nível ≥ 3)', curriculumPct, r.curriculum_pct, '%');
       // Sem data de nascimento o critério de idade não é avaliado (nem bloqueia): o cadastro fica sinalizado.
@@ -247,7 +260,7 @@ function studentMetrics(st, core, today, attByStudent, skillsByStudent, lessonTe
       if (minAge != null && age != null) add('age', 'Idade mínima (IBJJF)', age, minAge, 'anos');
     }
   }
-  const progress = crit.length ? Math.round(crit.reduce((t, c) => t + Math.min(1, c.target > 0 ? c.current / c.target : 1), 0) / crit.length * 100) : 0;
+  const progress = crit.length ? Math.round(crit.reduce((t, c) => t + Math.min(1, c.target > 0 ? c.exact / c.target : 1), 0) / crit.length * 100) : 0;
   const ready = !!next && crit.length > 0 && crit.every(c => c.met);
   // D4: início no futuro é dado inválido (a API recusa, mas o banco pode ter vindo de importação): sem ausência calculável, nunca negativa.
   // D4b: sem nenhuma presença a ausência conta desde o início do cadastro, então o aluno novo só entra em risco após 14 dias.
@@ -258,13 +271,13 @@ function studentMetrics(st, core, today, attByStudent, skillsByStudent, lessonTe
     at_risk: st.status === 'ativo' && daysAbsent !== null && daysAbsent >= 14,
     classes_last_30d: last30, weekly_avg: Math.round(weekly * 10) / 10, mat_hours: Math.round(hours * 10) / 10,
     classes_since_degree: sinceDegree, classes_since_belt: sinceBelt,
-    months_in_belt: Math.round(monthsBetween(st.belt_since, today) * 10) / 10,
+    months_in_belt: Math.round(Math.max(0, monthsBetween(st.belt_since, today)) * 10) / 10,
     training_months: Math.round(trainingMonths * 10) / 10,
     experience: { score: expScore, in_belt: sinceBelt, level: expIdx + 1, label: EXPERIENCE[expIdx][1], next_at: EXPERIENCE[expIdx + 1]?.[0] ?? null },
     learning: { pct: learningPct, level: learnIdx + 1, label: LEARNING[learnIdx][1], curriculum_size: curr.length, mastered, curriculum_pct: curriculumPct },
     difficulties: difficulties.slice(0, 10),
     techniques_seen: seen.size,
-    next, criteria: crit, progress, ready
+    next, criteria: crit.map(({ exact, ...c }) => c), progress, ready
   };
 }
 

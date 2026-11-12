@@ -15,8 +15,6 @@ import { buildManual, buildGenerated, buildEmpty } from './ref/scenarios.mjs';
 
 const DISCOVER = process.argv.includes('--descobrir');
 const CATALOG = fileURLToPath(new URL('./ref/divergencias.json', import.meta.url));
-const TOL = { meses: 0.15, progresso: 5 };           // documentados em docs/regras-calculos.md
-const MONTH_FIELDS = new Set(['months_in_belt', 'training_months', 'criteria.months.current']);
 
 // ---------- visões planas ----------
 function flatWorkerStudent(s) {
@@ -63,8 +61,6 @@ function diffDifficulties(w, r) {
 const same = (a, b) => a === b || (a == null && b == null);
 function compareField(field, w, r) {
   if (field === 'difficulties') { const e = diffDifficulties(w, r); return e ? { w: JSON.stringify(w), r: e } : null; }
-  if (MONTH_FIELDS.has(field)) return (w == null || r == null) ? (same(w, r) ? null : { w, r }) : Math.abs(w - r) <= TOL.meses ? null : { w, r };
-  if (field === 'progress') return Math.abs(w - r) <= TOL.progresso ? null : { w, r };
   return same(w, r) ? null : { w, r };
 }
 
