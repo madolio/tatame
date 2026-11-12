@@ -186,6 +186,23 @@ await step('professor sem permissão de admin e logout', async () => {
   await page.click('.nav a[data-tab=ajustes]'); await page.waitForSelector('text=só o administrador edita');
   assert.equal(await page.locator('#acad').count(), 0);
   assert.ok(await page.locator('[name="branca.degree_months"]').isDisabled());
+  assert.equal(await page.locator('a[href="/api/export/alunos.csv"]').count(), 0, 'professor não vê exportar CSV');
+  // técnicas: só consulta
+  await page.click('.nav a[data-tab=tecnicas]'); await page.waitForSelector('text=Currículo branca');
+  assert.equal(await page.locator('text=Nova técnica').count(), 0, 'professor não vê Nova técnica');
+  await page.click('.tlib >> nth=0'); await page.waitForSelector('#tf');
+  assert.ok(await page.locator('#tf [name=name]').isDisabled(), 'campos da técnica travados');
+  assert.equal(await page.locator('#tf button:not([type=button])').count(), 0, 'sem botão salvar');
+  await page.click('[data-act=close-sheet]');
+  // horário: sem excluir; aluno: datas de graduação travadas; mas o dia a dia continua
+  await page.click('.nav a[data-tab=aulas]'); await page.click('[data-act=aulas-tab][data-id=horarios]'); await page.click('.cls >> nth=0'); await page.waitForSelector('#cls');
+  assert.equal(await page.locator('#cls-del').count(), 0, 'professor não exclui horário');
+  await page.click('[data-act=close-sheet]');
+  await page.click('.nav a[data-tab=alunos]'); await page.click('#stu-list >> text=Bruno Costa'); await page.click('[data-act=detail-tab][data-id=dados]');
+  assert.ok(await page.locator('#stu-form [name=belt_since]').isDisabled(), 'datas de graduação travadas para o professor');
+  await page.fill('#stu-form [name=phone]', '11 98888-7777'); await clear(); await page.click('#stu-form [type=submit]'); assert.match(await toastText(), /Dados salvos/);
+  await page.click('.nav a[data-tab=aulas]'); await page.click('[data-act=aulas-tab][data-id=chamadas]'); await page.click('text=Nova chamada'); await page.waitForSelector('#lesson-screen');
+  await page.click('#att-list .att >> nth=0'); await clear(); await page.click('[data-act=lesson-save]'); assert.match(await toastText(), /Chamada salva/);
 });
 
 await step('desktop', async () => {

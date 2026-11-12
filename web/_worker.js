@@ -334,7 +334,12 @@ function techniqueStats(C) {
 // =====================================================================
 // Rotas
 // =====================================================================
-const STUDENT_FIELDS = async (b, existing) => {
+// Campos que mudam a contagem para graduação: depois do cadastro, só o administrador corrige.
+const GRADUATION_FIELDS = ['belt_since', 'degree_since', 'imported_classes_belt', 'imported_classes_degree'];
+const STUDENT_FIELDS = async (b, existing, canFixGraduation = true) => {
+  if (existing && !canFixGraduation) {
+    for (const k of GRADUATION_FIELDS) if (b[k] !== undefined && b[k] !== '' && String(b[k]) !== String(existing[k])) throw new HttpError(403, 'Só o administrador corrige datas de graduação e aulas anteriores ao sistema.');
+  }
   const today = todayStr();
   const o = {
     name: str(b.name, { min: 2, max: 80, field: 'Nome', required: true }),
@@ -568,7 +573,14 @@ async function route(req, env, url, ctx) {
   // ---------- daqui em diante: só equipe logada ----------
   const me = await currentStaff(req, db, ctx);
   if (!me) throw new HttpError(401, 'Sessão expirada. Entre novamente.');
+  // Matriz de acesso (ver README, "Perfis"). Professor faz o dia a dia; o que está marcado com admin() é só do administrador.
+  // Excluir chamada e desfazer graduação: o professor só mexe no que ele mesmo registrou nos últimos OWN_DAYS dias.
   const admin = () => { if (me.role !== 'admin') throw new HttpError(403, 'Apenas o administrador pode fazer isso.'); };
+  const OWN_DAYS = 7;
+  const ownRecent = (staffId, createdAt, what) => {
+    if (me.role === 'admin') return;
+    if (staffId !== me.id || Date.now() - Date.parse(createdAt) > OWN_DAYS * 864e5) throw new HttpError(403, `Só o administrador exclui ${what} de outra pessoa ou com mais de ${OWN_DAYS} dias.`);
+  };
   let m;
 
   if (path === '/api/me' && method === 'GET') return json({ me, settings: await getSettings(db) });
@@ -607,7 +619,7 @@ async function route(req, env, url, ctx) {
     const ex = await first(db, 'SELECT * FROM students WHERE id = ?', id);
     if (!ex) throw new HttpError(404, 'Aluno não encontrado.');
     if (method === 'PUT') {
-      const o = await STUDENT_FIELDS(await body(), ex);
+      const o = await STUDENT_FIELDS(await body(), ex, me.role === 'admin');
       const cols = Object.keys(o);
       await run(db, `UPDATE students SET ${cols.map(c => c + ' = ?').join(', ')}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`, ...cols.map(c => o[c]), id);
       return json(await studentDetail(db, id));
@@ -640,6 +652,7 @@ async function route(req, env, url, ctx) {
   if ((m = path.match(/^\/api\/promotions\/([0-9a-f-]{36})$/)) && method === 'DELETE') {
     const p = await first(db, 'SELECT * FROM promotions WHERE id = ?', m[1]);
     if (!p) throw new HttpError(404, 'Graduação não encontrada.');
+    ownRecent(p.staff_id, p.created_at, 'graduações');
     const latest = await first(db, 'SELECT id FROM promotions WHERE student_id = ? ORDER BY date DESC, created_at DESC LIMIT 1', p.student_id);
     if (latest.id !== p.id) bad('Só é possível desfazer a graduação mais recente do aluno.');
     await db.batch([
@@ -664,7 +677,7 @@ async function route(req, env, url, ctx) {
       await run(db, 'UPDATE classes SET name=?, weekday=?, start_time=?, end_time=?, level=?, modality=?, instructor_id=?, active=? WHERE id=?', o.name, o.weekday, o.start_time, o.end_time, o.level, o.modality, o.instructor_id, o.active, m[1]);
       return json(await first(db, 'SELECT * FROM classes WHERE id = ?', m[1]));
     }
-    if (method === 'DELETE') { await run(db, 'DELETE FROM classes WHERE id = ?', m[1]); return json({ ok: true }); }
+    if (method === 'DELETE') { admin(); await run(db, 'DELETE FROM classes WHERE id = ?', m[1]); return json({ ok: true }); }
   }
 
   // ---------- aulas e chamada ----------
@@ -679,10 +692,10 @@ async function route(req, env, url, ctx) {
   if (path === '/api/lessons' && method === 'POST') { const id = await saveLesson(db, me, await body(), null); return json(await lessonOut(db, id), 201); }
   if ((m = path.match(/^\/api\/lessons\/([0-9a-f-]{36})$/))) {
     if (method === 'GET') return json(await lessonOut(db, m[1]));
-    const ex = await first(db, 'SELECT id FROM lessons WHERE id = ?', m[1]);
+    const ex = await first(db, 'SELECT id, created_by, created_at FROM lessons WHERE id = ?', m[1]);
     if (!ex) throw new HttpError(404, 'Aula não encontrada.');
     if (method === 'PUT') { await saveLesson(db, me, await body(), m[1]); return json(await lessonOut(db, m[1])); }
-    if (method === 'DELETE') { await run(db, 'DELETE FROM lessons WHERE id = ?', m[1]); return json({ ok: true }); }
+    if (method === 'DELETE') { ownRecent(ex.created_by, ex.created_at, 'chamadas'); await run(db, 'DELETE FROM lessons WHERE id = ?', m[1]); return json({ ok: true }); }
   }
 
   // ---------- técnicas ----------
@@ -695,12 +708,14 @@ async function route(req, env, url, ctx) {
     active: b.active === false || b.active === 0 ? 0 : 1
   });
   if (path === '/api/techniques' && method === 'POST') {
+    admin();
     const o = TECH(await body());
     if (await first(db, 'SELECT id FROM techniques WHERE name = ? COLLATE NOCASE', o.name)) throw new HttpError(409, 'Já existe uma técnica com esse nome.');
     const r = await run(db, 'INSERT INTO techniques (name, category, min_belt, difficulty, description, active) VALUES (?,?,?,?,?,?)', o.name, o.category, o.min_belt, o.difficulty, o.description, o.active);
     return json(await first(db, 'SELECT * FROM techniques WHERE id = ?', r.meta.last_row_id), 201);
   }
   if ((m = path.match(/^\/api\/techniques\/(\d+)$/))) {
+    admin();
     const ex = await first(db, 'SELECT * FROM techniques WHERE id = ?', +m[1]);
     if (!ex) throw new HttpError(404, 'Técnica não encontrada.');
     if (method === 'PUT') {
@@ -768,6 +783,7 @@ async function route(req, env, url, ctx) {
 
   // ---------- exportação ----------
   if (path === '/api/export/alunos.csv' && method === 'GET') {
+    admin();
     const C = await computeAll(db);
     // Aspas duplicadas; apóstrofo na frente de = + - @ e tabulação, para a planilha não interpretar o campo como fórmula; sem caracteres de controle.
     const q = v => { let s = String(v ?? '').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, ''); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return `"${s.replace(/"/g, '""')}"`; };

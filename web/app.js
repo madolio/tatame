@@ -117,6 +117,8 @@ const stuById = id => S.students.find(s => s.id === id);
 const techById = id => S.techniques.find(t => t.id === id);
 const clsById = id => S.classes.find(c => c.id === id);
 const isAdmin = () => S.me && S.me.role === 'admin';
+// Espelho da regra do servidor: professor só exclui chamada ou desfaz graduação que ele mesmo registrou nos últimos 7 dias.
+const canUndo = (staffId, createdAt) => isAdmin() || (staffId === S.me.id && Date.now() - Date.parse(createdAt) < 7 * 864e5);
 
 async function refresh() {
   const st = await api('GET', '/api/state');
@@ -351,7 +353,7 @@ VIEWS.alunos = () => {
   const counts = { todos: S.students.length, ativos: S.students.filter(s => s.status === 'ativo').length, aptos: S.dashboard.ready_list.length, risco: S.dashboard.risk_list.length, inativos: S.students.filter(s => s.status !== 'ativo').length };
   return {
     html: `<div class="top"><div><h1>Alunos</h1><div class="sub">${counts.ativos} ativos · ${counts.todos} cadastrados</div></div>
-      <div class="row"><a class="icon-btn" href="/api/export/alunos.csv" download aria-label="Exportar planilha" title="Exportar CSV">${I('download', 18)}</a><button class="btn ghost sm" data-act="student-new">${I('plus', 15)} Novo aluno</button></div></div>
+      <div class="row">${isAdmin() ? `<a class="icon-btn" href="/api/export/alunos.csv" download aria-label="Exportar planilha" title="Exportar CSV">${I('download', 18)}</a>` : ''}<button class="btn ghost sm" data-act="student-new">${I('plus', 15)} Novo aluno</button></div></div>
     <div class="toolbar">
       <div class="chips">${[['ativos', 'Ativos'], ['aptos', 'Aptos a graduar'], ['risco', 'Sem treinar 14+ dias'], ['inativos', 'Trancados/inativos'], ['todos', 'Todos']].map(([k, l]) => `<button class="chip ${f === k ? 'on' : ''}" data-act="stu-filter" data-id="${k}">${l} <span class="muted">${counts[k]}</span></button>`).join('')}</div>
       <div class="toolbar-r"><label class="search">${I('search', 15)}<input class="input" id="stu-q" placeholder="Buscar por nome ou apelido" value="${esc(S.ui.q)}" aria-label="Buscar aluno"></label>
@@ -393,7 +395,7 @@ VIEWS.aluno = id => {
     <div class="section-title"><h2>Histórico de graduações</h2></div>
     <div class="list">${promotions.map(p => `<div class="item">${belt(p.to_belt, p.to_degrees)}<div class="grow"><b class="small">${p.kind === 'grau' ? `${p.to_degrees}º grau na faixa ${p.to_belt}` : `Faixa ${p.to_belt}`}</b>
         <div class="muted xs">${ld(p.date)}${p.staff_name ? ` · ${esc(p.staff_name)}` : ''}${p.criteria_met ? '' : ' · <span style="color:var(--warn)">antes dos critérios</span>'}${p.notes ? ` · “${esc(p.notes)}”` : ''}</div></div>
-        ${p === lastP ? `<button class="icon-btn plain" data-act="promo-undo" data-id="${p.id}" aria-label="Desfazer graduação" title="Desfazer">${I('undo', 16)}</button>` : ''}</div>`).join('') || `<div class="empty">Sem graduações registradas no app. Faixa atual desde ${ld(s.belt_since)}.</div>`}</div>`;
+        ${p === lastP && canUndo(p.staff_id, p.created_at) ? `<button class="icon-btn plain" data-act="promo-undo" data-id="${p.id}" aria-label="Desfazer graduação" title="Desfazer">${I('undo', 16)}</button>` : ''}</div>`).join('') || `<div class="empty">Sem graduações registradas no app. Faixa atual desde ${ld(s.belt_since)}.</div>`}</div>`;
   } else if (tab === 'tecnicas') {
     const sf = S.ui.skillFilter;
     const rank = ADULT.indexOf(['cinza', 'amarela', 'laranja', 'verde'].includes(s.belt) ? 'branca' : s.belt);
@@ -445,6 +447,8 @@ VIEWS.aluno = id => {
 
 function studentForm(s) {
   const n = !s; s = s || {};
+  // Campos que mudam a contagem para graduação: depois do cadastro, só o administrador corrige (o servidor também confere).
+  const lock = !n && !isAdmin() ? 'disabled' : '';
   return `<form id="stu-form" class="card form-grid" novalidate>
     <label class="field full"><span>Nome completo *</span><input class="input" name="name" maxlength="80" value="${esc(s.name || '')}" required ${n ? 'autofocus' : ''}></label>
     <label class="field"><span>Apelido</span><input class="input" name="nickname" maxlength="40" value="${esc(s.nickname || '')}"></label>
@@ -455,11 +459,11 @@ function studentForm(s) {
     <label class="field"><span>Experiência anterior (meses)</span><input class="input" name="prior_months" inputmode="numeric" value="${s.prior_months ?? 0}"></label>
     ${n ? `<label class="field"><span>Faixa atual</span><select class="input" name="belt">${BELTS.map(b => `<option value="${b}">${cap(b)}</option>`).join('')}</select></label>
       <label class="field"><span>Graus</span><select class="input" name="degrees">${[0, 1, 2, 3, 4, 5, 6].map(d => `<option>${d}</option>`).join('')}</select></label>` : ''}
-    <label class="field"><span>Na faixa atual desde</span><input class="input" type="date" name="belt_since" value="${s.belt_since || ''}" max="${S.today}" placeholder="início"></label>
-    <label class="field"><span>Data do último grau</span><input class="input" type="date" name="degree_since" value="${s.degree_since || ''}" max="${S.today}"></label>
-    <label class="field"><span>Aulas na faixa atual antes do sistema</span><input class="input" name="imported_classes_belt" inputmode="numeric" value="${s.imported_classes_belt ?? 0}"></label>
-    <label class="field"><span>Aulas desde o último grau antes do sistema</span><input class="input" name="imported_classes_degree" inputmode="numeric" value="${s.imported_classes_degree ?? 0}"></label>
-    <p class="full muted xs" style="margin:-4px 0 0">Para alunos antigos: estimativa das aulas feitas antes de usar o Tatame. Entram na contagem para grau e faixa e zeram na próxima graduação.</p>
+    <label class="field"><span>Na faixa atual desde</span><input class="input" type="date" name="belt_since" value="${s.belt_since || ''}" max="${S.today}" placeholder="início" ${lock}></label>
+    <label class="field"><span>Data do último grau</span><input class="input" type="date" name="degree_since" value="${s.degree_since || ''}" max="${S.today}" ${lock}></label>
+    <label class="field"><span>Aulas na faixa atual antes do sistema</span><input class="input" name="imported_classes_belt" inputmode="numeric" value="${s.imported_classes_belt ?? 0}" ${lock}></label>
+    <label class="field"><span>Aulas desde o último grau antes do sistema</span><input class="input" name="imported_classes_degree" inputmode="numeric" value="${s.imported_classes_degree ?? 0}" ${lock}></label>
+    <p class="full muted xs" style="margin:-4px 0 0">Para alunos antigos: estimativa das aulas feitas antes de usar o Tatame. Entram na contagem para grau e faixa e zeram na próxima graduação.${lock ? ' Depois do cadastro, só o administrador altera as datas de graduação e essas aulas.' : ''}</p>
     <label class="field"><span>Peso (kg)</span><input class="input" name="weight_kg" inputmode="decimal" value="${s.weight_kg ?? ''}"></label>
     <label class="field"><span>Situação</span><select class="input" name="status">${Object.entries(STATUS).map(([k, l]) => `<option value="${k}" ${(s.status || 'ativo') === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
     <label class="field"><span>Sexo</span><select class="input" name="sex"><option value="">–</option>${[['m', 'Masculino'], ['f', 'Feminino'], ['x', 'Outro / não informar']].map(([k, l]) => `<option value="${k}" ${s.sex === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
@@ -583,7 +587,7 @@ function renderLesson() {
   const techs = S.techniques.filter(t => t.active && (!L.tq || norm(t.name).includes(norm(L.tq)) || norm(t.category).includes(norm(L.tq))));
   o.innerHTML = `<div class="full-screen" id="lesson-screen"><div class="app">
     <div class="top"><button class="icon-btn" data-act="lesson-close" aria-label="Fechar">${I('left', 18)}</button><h1 style="font-size:20px">${L.id ? 'Editar chamada' : 'Chamada'}</h1>
-      ${L.id ? `<button class="icon-btn" data-act="lesson-delete" aria-label="Excluir aula">${I('trash', 17)}</button>` : '<span style="width:38px"></span>'}</div>
+      ${L.id && canUndo(L.created_by, L.created_at) ? `<button class="icon-btn" data-act="lesson-delete" aria-label="Excluir aula">${I('trash', 17)}</button>` : '<span style="width:38px"></span>'}</div>
     <div class="card form-grid">
       <label class="field full"><span>Horário</span><select class="input" id="ls-class"><option value="">Aula avulsa</option>${S.classes.filter(c => c.active || c.id === L.class_id).map(c => `<option value="${c.id}" ${c.id === L.class_id ? 'selected' : ''}>${WDS[c.weekday]} ${c.start_time} · ${esc(c.name)}</option>`).join('')}</select></label>
       <label class="field"><span>Data</span><input class="input" type="date" id="ls-date" value="${L.date}" max="${S.today}"></label>
@@ -636,7 +640,7 @@ function openClass(id) {
     <label class="field"><span>Professor</span><select class="input" name="instructor_id"><option value="">–</option>${S.staff.filter(s => s.active).map(s => `<option value="${s.id}" ${c.instructor_id === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></label>
     ${id ? `<label class="field full row" style="gap:8px"><input type="checkbox" name="active" ${c.active ? 'checked' : ''}> <span style="margin:0">Horário ativo</span></label>` : ''}
     <div class="err full" id="cls-err"></div>
-    ${id ? `<button type="button" class="btn danger" id="cls-del">${I('trash', 15)} Excluir</button>` : ''}<button class="btn ${id ? '' : 'full'}">Salvar</button></form>`);
+    ${id && isAdmin() ? `<button type="button" class="btn danger" id="cls-del">${I('trash', 15)} Excluir</button>` : ''}<button class="btn ${id && isAdmin() ? '' : 'full'}">Salvar</button></form>`);
   $('#cls', w).onsubmit = async e => {
     e.preventDefault();
     const b = formObj(e.target); b.weekday = +b.weekday; b.active = id ? !!e.target.active.checked : true;
@@ -645,7 +649,7 @@ function openClass(id) {
     const r = await busy(e.target.querySelector('button:not([type=button])'), () => id ? api('PUT', '/api/classes/' + id, b) : api('POST', '/api/classes', b), 'Horário salvo.');
     if (!r) return; closeSheet(); await refresh(); render();
   };
-  if (id) $('#cls-del', w).onclick = async () => {
+  if (id && isAdmin()) $('#cls-del', w).onclick = async () => {
     w._onClose = null;
     if (!(await confirmBox('Excluir horário?', 'As aulas já registradas continuam no histórico como aulas avulsas. Para só pausar, desative.', 'Excluir'))) return;
     await busy(null, async () => { await api('DELETE', '/api/classes/' + id); await refresh(); render(); }, 'Horário excluído.');
@@ -665,7 +669,7 @@ VIEWS.tecnicas = () => {
   const never = S.techniques.filter(t => t.active && !t.times_taught);
   const dots = d => `<span class="diff" title="Dificuldade ${d}/5">${[1, 2, 3, 4, 5].map(i => `<i class="${i <= d ? 'on' : ''}"></i>`).join('')}</span>`;
   return {
-    html: `<div class="top"><div><h1>Técnicas</h1><div class="sub">${S.techniques.filter(t => t.active).length} no currículo · ${never.length} nunca ensinadas</div></div><button class="btn ghost sm" data-act="tech-edit">${I('plus', 15)} Nova técnica</button></div>
+    html: `<div class="top"><div><h1>Técnicas</h1><div class="sub">${S.techniques.filter(t => t.active).length} no currículo · ${never.length} nunca ensinadas</div></div>${isAdmin() ? `<button class="btn ghost sm" data-act="tech-edit">${I('plus', 15)} Nova técnica</button>` : ''}</div>
     <div class="lib">
       <div class="chips lib-cats" role="group" aria-label="Categorias"><button class="chip ${!cat ? 'on' : ''}" data-act="tech-cat" data-id="">Todas <span class="muted">${S.techniques.length}</span></button>${CATS.map(c => `<button class="chip ${cat === c ? 'on' : ''}" data-act="tech-cat" data-id="${c}">${c} <span class="muted">${S.techniques.filter(t => t.category === c).length}</span></button>`).join('')}</div>
       <div class="lib-main">
@@ -689,18 +693,21 @@ VIEWS.tecnicas = () => {
 
 function openTech(id) {
   const t = id ? techById(id) : { category: S.ui.techCat || 'Fundamentos', min_belt: 'branca', difficulty: 2, active: 1 };
-  const w = sheet(`${sheetHead(id ? 'Editar técnica' : 'Nova técnica')}<form id="tf" class="form-grid" novalidate>
-    <label class="field full"><span>Nome</span><input class="input" name="name" maxlength="80" value="${esc(t.name || '')}" autofocus required></label>
-    <label class="field"><span>Categoria</span><select class="input" name="category">${CATS.map(c => `<option ${t.category === c ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
-    <label class="field"><span>Currículo da faixa</span><select class="input" name="min_belt">${ADULT.map(b => `<option value="${b}" ${t.min_belt === b ? 'selected' : ''}>${cap(b)}</option>`).join('')}</select></label>
-    <label class="field full"><span>Dificuldade (1 a 5)</span><div class="seg" id="tf-diff">${[1, 2, 3, 4, 5].map(i => `<button type="button" data-d="${i}" class="${+t.difficulty === i ? 'on' : ''}">${i}</button>`).join('')}</div></label>
-    <label class="field full"><span>Descrição</span><textarea class="input" name="description" maxlength="500">${esc(t.description || '')}</textarea></label>
-    ${id ? `<label class="field full row" style="gap:8px"><input type="checkbox" name="active" ${t.active ? 'checked' : ''}> <span style="margin:0">Faz parte do currículo (ativa)</span></label>
+  // Professor só consulta o catálogo: mesma folha, campos travados, sem botões de salvar e excluir.
+  const ro = !isAdmin(), dis = ro ? 'disabled' : '';
+  const w = sheet(`${sheetHead(ro ? 'Técnica' : id ? 'Editar técnica' : 'Nova técnica')}<form id="tf" class="form-grid" novalidate>
+    <label class="field full"><span>Nome</span><input class="input" name="name" maxlength="80" value="${esc(t.name || '')}" ${ro ? '' : 'autofocus'} required ${dis}></label>
+    <label class="field"><span>Categoria</span><select class="input" name="category" ${dis}>${CATS.map(c => `<option ${t.category === c ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
+    <label class="field"><span>Currículo da faixa</span><select class="input" name="min_belt" ${dis}>${ADULT.map(b => `<option value="${b}" ${t.min_belt === b ? 'selected' : ''}>${cap(b)}</option>`).join('')}</select></label>
+    <label class="field full"><span>Dificuldade (1 a 5)</span><div class="seg" id="tf-diff">${[1, 2, 3, 4, 5].map(i => `<button type="button" data-d="${i}" class="${+t.difficulty === i ? 'on' : ''}" ${dis}>${i}</button>`).join('')}</div></label>
+    <label class="field full"><span>Descrição</span><textarea class="input" name="description" maxlength="500" ${dis}>${esc(t.description || '')}</textarea></label>
+    ${id ? `<label class="field full row" style="gap:8px"><input type="checkbox" name="active" ${t.active ? 'checked' : ''} ${dis}> <span style="margin:0">Faz parte do currículo (ativa)</span></label>
       <div class="full muted xs">${t.times_taught ? `Ensinada ${t.times_taught} vezes · ${t.assessed} aluno(s) avaliado(s) · ${t.proficient} com nível 3+` : 'Ainda não foi ensinada.'}</div>` : ''}
     <div class="err full" id="tf-err"></div>
-    ${id && !t.times_taught && !t.assessed ? `<button type="button" class="btn danger" id="tf-del">${I('trash', 15)} Excluir</button>` : ''}<button class="btn ${id && !t.times_taught && !t.assessed ? '' : 'full'}">Salvar</button></form>`);
+    ${ro ? '<p class="full muted xs" style="margin:0">Só o administrador edita o catálogo de técnicas.</p>'
+      : `${id && !t.times_taught && !t.assessed ? `<button type="button" class="btn danger" id="tf-del">${I('trash', 15)} Excluir</button>` : ''}<button class="btn ${id && !t.times_taught && !t.assessed ? '' : 'full'}">Salvar</button>`}</form>`);
   let diff = +t.difficulty;
-  $$('#tf-diff button', w).forEach(b => b.onclick = () => { diff = +b.dataset.d; $$('#tf-diff button', w).forEach(x => x.classList.toggle('on', x === b)); });
+  if (!ro) $$('#tf-diff button', w).forEach(b => b.onclick = () => { diff = +b.dataset.d; $$('#tf-diff button', w).forEach(x => x.classList.toggle('on', x === b)); });
   $('#tf', w).onsubmit = async e => {
     e.preventDefault();
     const b = { ...formObj(e.target), difficulty: diff, active: id ? !!e.target.active.checked : true };
@@ -735,7 +742,7 @@ VIEWS.ajustes = () => {
     <div class="section-title"><h2>Minha conta</h2></div>
     <form id="pw" class="card form-grid" novalidate><label class="field"><span>Senha atual</span><input class="input" type="password" name="current" autocomplete="current-password"></label>
       <label class="field"><span>Nova senha</span><input class="input" type="password" name="password" autocomplete="new-password" minlength="8"></label><button class="btn ghost full">Trocar senha</button></form>
-    <div class="row"><a class="btn ghost grow" href="/api/export/alunos.csv" download>${I('download', 16)} Exportar alunos (CSV)</a><button class="btn ghost grow" data-act="logout">${I('logout', 16)} Sair</button></div>`,
+    <div class="row">${adm ? `<a class="btn ghost grow" href="/api/export/alunos.csv" download>${I('download', 16)} Exportar alunos (CSV)</a>` : ''}<button class="btn ghost grow" data-act="logout">${I('logout', 16)} Sair</button></div>`,
     after() {
       if (adm) {
         $('#acad').onsubmit = async e => { e.preventDefault(); const r = await busy(e.target.querySelector('button'), () => api('PUT', '/api/settings', formObj(e.target)), 'Nome salvo.'); if (r) { await refresh(); render(); } };
