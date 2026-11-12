@@ -54,7 +54,7 @@ const belt = (b, deg = 0, lg = false) => {
   return `<span class="belt ${lg ? 'lg' : ''}" data-b="${b}" role="img" aria-label="Faixa ${b}${deg ? `, ${deg} grau${deg > 1 ? 's' : ''}` : ''}">${[...Array(deg)].map((_, i) => `<i style="right:${(tabR + tabW - pad - w - i * step).toFixed(1)}px"></i>`).join('')}</span>`;
 };
 const beltName = (b, d) => `Faixa ${b}${d ? ` · ${d}º grau` : ''}`;
-const nextLabel = n => !n ? 'Faixa preta máxima' : n.kind === 'grau' ? `${n.to_degrees}º grau` : `Faixa ${n.to_belt}`;
+const nextLabel = n => !n ? 'Faixa preta máxima' : n.kind === 'grau' ? `${n.to_degrees}º grau` : n.to_belt ? `Faixa ${n.to_belt}` : 'Faixa a definir';
 
 function toast(msg, type = 'info') {
   $$('.toast').forEach(t => t.remove());
@@ -271,7 +271,7 @@ setInterval(() => { if (S.loaded) $$('[data-clock]').forEach(el => { const c = S
 const degSlots = b => b === 'preta' ? 6 : 4;
 function rankLabel(s) {
   const m = s.metrics, n = m.next, st = m.ready ? 'critérios cumpridos' : `${m.progress}% dos critérios`;
-  return `Faixa ${s.belt}, ${s.degrees} de ${degSlots(s.belt)} graus. ${!n ? 'Graduação máxima.' : n.kind === 'grau' ? `Próximo: ${n.to_degrees}º grau, ${st}.` : `Próximo: faixa ${n.to_belt}, ${st}.`}`;
+  return `Faixa ${s.belt}, ${s.degrees} de ${degSlots(s.belt)} graus. ${!n ? 'Graduação máxima.' : n.kind === 'grau' ? `Próximo: ${n.to_degrees}º grau, ${st}.` : `Próximo: ${n.to_belt ? `faixa ${n.to_belt}` : 'faixa a definir'}, ${st}.`}`;
 }
 function rank(s, lg = false) {
   const m = s.metrics, n = m.next, f = m.ready ? 1 : Math.max(0, Math.min(100, m.progress)) / 100;
@@ -281,7 +281,7 @@ function rank(s, lg = false) {
     if (n && n.kind === 'grau' && n.to_degrees === d) return `<i class="pend${m.ready ? ' ready' : ''}" style="--f:${f}" data-n="${d}º"></i>`;
     return `<i data-n="${d}º"></i>`;
   }).join('');
-  return `<span class="rank${lg ? ' lg' : ''}" data-b="${s.belt}" role="img" aria-label="${rankLabel(s)}"><span class="rk-belt"><span class="rk-tab">${slots}</span></span>${n && n.kind === 'faixa' ? `<span class="rk-next${m.ready ? ' ready' : ''}" data-b="${n.to_belt}" style="--f:${f}"></span>` : ''}${!n && lg ? '<span class="rk-max">graduação máxima</span>' : ''}</span>`;
+  return `<span class="rank${lg ? ' lg' : ''}" data-b="${s.belt}" role="img" aria-label="${rankLabel(s)}"><span class="rk-belt"><span class="rk-tab">${slots}</span></span>${n && n.kind === 'faixa' && n.to_belt ? `<span class="rk-next${m.ready ? ' ready' : ''}" data-b="${n.to_belt}" style="--f:${f}"></span>` : ''}${!n && lg ? '<span class="rk-max">graduação máxima</span>' : ''}</span>`;
 }
 
 function stuRow(s, extra = '') {
@@ -420,10 +420,10 @@ VIEWS.aluno = id => {
       ${m.criteria.map(c => `<div class="crit"><span class="small">${c.met ? `<span class="ok">${I('check', 14)}</span>` : `<span class="no">○</span>`} ${c.label}</span>
         <span class="small num"><b>${c.key === 'months' ? n1(c.current) : n0(c.current)}</b><span class="muted"> / ${c.key === 'months' ? n1(c.target) : c.target} ${c.unit}</span></span>
         <div class="bar thin"><i style="width:${pct(c.current, c.target || 1)}%;background:${c.met ? 'var(--good)' : 'var(--accent)'}"></i></div></div>`).join('')}
-      ${m.criteria.some(c => c.key === 'age') && s.birth_date == null ? '<p class="muted xs">Informe a data de nascimento para conferir a idade mínima.</p>' : ''}
+      ${m.needs_profile ? `<p class="muted xs">Cadastro incompleto: informe a data de nascimento${m.next && m.next.choice_needed ? ' (ou escolha a faixa ao graduar)' : ' para conferir a idade mínima'}.</p>` : ''}
       ${m.next ? `<div class="row" style="margin-top:14px;flex-wrap:wrap">
         ${m.next.kind === 'grau' ? `<button class="btn grow" data-act="promote" data-kind="grau">${I('medal', 16)} Dar ${m.next.to_degrees}º grau</button>` : ''}
-        <button class="btn ${m.next.kind === 'faixa' ? '' : 'ghost'} grow" data-act="promote" data-kind="faixa">${I('bolt', 16)} ${m.next.kind === 'faixa' ? `Graduar faixa ${m.next.to_belt}` : 'Trocar de faixa'}</button></div>` : ''}
+        <button class="btn ${m.next.kind === 'faixa' ? '' : 'ghost'} grow" data-act="promote" data-kind="faixa">${I('bolt', 16)} ${m.next.kind === 'faixa' ? (m.next.to_belt ? `Graduar faixa ${m.next.to_belt}` : 'Graduar faixa') : 'Trocar de faixa'}</button></div>` : ''}
       <p class="muted xs" style="margin-bottom:0">Critérios da faixa ${s.belt} definidos em Ajustes. Tempos mínimos de faixa e idades seguem o sistema de graduação da IBJJF.</p></div>
     <div class="section-title"><h2>Histórico de graduações</h2></div>
     <div class="list">${promotions.map(p => `<div class="item">${belt(p.to_belt, p.to_degrees)}<div class="grow"><b class="small">${p.kind === 'grau' ? `${p.to_degrees}º grau na faixa ${p.to_belt}` : `Faixa ${p.to_belt}`}</b>
@@ -527,19 +527,19 @@ function bindStudentForm(s) {
 
 function openPromote(kind) {
   const s = detail.student, m = s.metrics;
-  const proposed = kind === 'grau' ? { belt: s.belt, deg: s.degrees + 1 } : { belt: m.next && m.next.kind === 'faixa' ? m.next.to_belt : BELTS[BELTS.indexOf(s.belt) + 1], deg: 0 };
+  const proposed = kind === 'grau' ? { belt: s.belt, deg: s.degrees + 1 } : { belt: m.next && m.next.kind === 'faixa' ? m.next.to_belt : m.next && m.next.choice_needed ? null : BELTS[BELTS.indexOf(s.belt) + 1], deg: 0 };
   const ok = m.ready && m.next && m.next.kind === kind;
   const w = sheet(`${sheetHead(kind === 'grau' ? 'Dar grau' : 'Graduar faixa')}
-    <div class="row" style="gap:12px;margin-bottom:14px">${belt(s.belt, s.degrees, true)} ${I('right', 18)} <span id="pv-belt">${belt(proposed.belt, proposed.deg, true)}</span></div>
+    <div class="row" style="gap:12px;margin-bottom:14px">${belt(s.belt, s.degrees, true)} ${I('right', 18)} <span id="pv-belt">${proposed.belt ? belt(proposed.belt, proposed.deg, true) : '<span class="muted small">faixa a definir</span>'}</span></div>
     ${ok ? '<div class="card tight" style="border-color:rgba(61,190,139,.4)"><span class="small" style="color:var(--good)">Critérios cumpridos.</span></div>'
       : `<div class="card tight" style="border-color:rgba(227,179,65,.4)"><div class="small" style="color:var(--warn)">Critérios ainda não cumpridos:</div><div class="muted xs" style="margin-top:4px">${m.next && m.next.kind === kind ? m.criteria.filter(c => !c.met).map(c => `${c.label}: ${c.key === 'months' ? n1(c.current) : n0(c.current)} de ${c.target} ${c.unit}`).join(' · ') : 'Esta graduação é diferente da próxima prevista.'}</div><div class="muted xs" style="margin-top:4px">Você pode graduar mesmo assim; fica registrado.</div></div>`}
     <form id="promo" class="form-grid" style="margin-top:12px" novalidate>
-      ${kind === 'faixa' ? `<label class="field full"><span>Nova faixa</span><select class="input" name="to_belt">${BELTS.slice(BELTS.indexOf(s.belt) + 1).map(b => `<option value="${b}" ${b === proposed.belt ? 'selected' : ''}>${cap(b)}</option>`).join('')}</select></label>` : ''}
+      ${kind === 'faixa' ? `<label class="field full"><span>Nova faixa</span><select class="input" name="to_belt" ${proposed.belt ? '' : 'required'}>${proposed.belt ? '' : '<option value="">Escolha a faixa…</option>'}${BELTS.slice(BELTS.indexOf(s.belt) + 1).map(b => `<option value="${b}" ${b === proposed.belt ? 'selected' : ''}>${cap(b)}</option>`).join('')}</select></label>` : ''}
       <label class="field"><span>Data</span><input class="input" type="date" name="date" value="${S.today}" max="${S.today}" min="${s.degree_since}" required></label>
       <label class="field full"><span>Observação</span><input class="input" name="notes" maxlength="500" placeholder="Ex.: exame de faixa, cerimônia de fim de ano"></label>
       <button class="btn full ${ok ? '' : ''}">${ok ? 'Confirmar graduação' : 'Graduar mesmo assim'}</button></form>`);
   const sel = $('[name=to_belt]', w);
-  if (sel) sel.onchange = () => { $('#pv-belt', w).innerHTML = belt(sel.value, 0, true); };
+  if (sel) sel.onchange = () => { $('#pv-belt', w).innerHTML = sel.value ? belt(sel.value, 0, true) : '<span class="muted small">faixa a definir</span>'; };
   $('#promo', w).onsubmit = async e => {
     e.preventDefault();
     const b = { ...formObj(e.target), kind, override: !ok };

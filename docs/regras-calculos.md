@@ -68,11 +68,11 @@ As duas diferem em até ~0,1 mês. O critério (`met`) só muda quando a data ca
 - `progress` = média de `min(1, atual ÷ alvo)` dos critérios, em %. `ready` = há próxima graduação, há critérios e todos foram cumpridos.
 - Idade mínima: `next_min_age` da regra da faixa atual, exceto branca → cinza (4 anos) e faixa infantil → azul (16).
 
-### Próxima faixa e idade — D1 [provisória]
+### Próxima faixa e idade — D1 [aprovada e aplicada]
 Faixas infantis (cinza, amarela, laranja, verde) são para quem tem até 15 anos.
 - **Idade conhecida:** branca: menor de 16 → cinza, senão azul; faixa infantil: menor de 16 e não verde → próxima infantil, senão azul; adulta: próxima da sequência.
 - **Idade desconhecida (sem data de nascimento):** não se presume adulto. Faixa infantil (cinza, amarela, laranja) segue para a próxima infantil; verde → azul; **branca fica ambígua** (`to_belt = null`: o instrutor escolhe ao graduar). O critério de **idade é ignorado** (não bloqueia a graduação), o aluno recebe `needs_profile = true` e `data_issues` contém `sem_nascimento`.
-**Atual:** sem nascimento considera idade 0. O aluno nunca fica pronto para faixa (idade 0 < 16) e a próxima faixa de qualquer faixa infantil vira azul.
+**Aplicação:** o Worker segue a regra acima. Na tela de graduação, quando a próxima faixa é "a definir", o instrutor escolhe a faixa explicitamente (cinza ou azul); a escolha conta como critérios cumpridos se o aluno está pronto. O aviso "Cadastro incompleto" aparece na aba Graduação. Antes da D1 o Worker usava idade 0: o aluno nunca ficava pronto e a faixa infantil sem nascimento apontava azul.
 
 ### Evolução de faixas e graus (integridade)
 Invariantes verificadas a partir da tabela de graduações, em ordem de registro:
@@ -133,14 +133,13 @@ O modelo de dados atual **não distingue** os dois casos: ambos são uma aula se
 
 | Regra | Efeito observado | Classe |
 |---|---|---|
-| D1 | Sem data de nascimento o Worker usa idade 0: aluno com 4 graus, 900 dias e currículo dominado fica em 75% e nunca pronto; amarela sem nascimento aponta azul em vez de laranja | regra aprovada |
 | D3 | Promover de faixa zera `imported_classes_belt` e a experiência cai: 300 pontos ("Avançado") viram 2 ("Novato") | regra aprovada |
 | D4 | Início no futuro: `days_absent = −10` | regra aprovada |
 | D5 | `new_this_month` conta inativos e início futuro (7 contra 4) | regra aprovada |
 | D6 | Média por aula inclui aulas sem presença (1,7 contra 1,9); o modelo não separa "sem chamada" de "chamada com zero" | depende de modelo |
 | D7 | Média semanal dividida sempre por 12 (0,5 contra 2,0 para quem entrou há 2 semanas) | regra aprovada |
 | item 8 | 31/01 → 30/04, alvo de 3 meses: calendário cumpre, aproximação dá 2,97 | tolerância |
-| D1/D4 | Sinalizações `needs_profile` e `data_issues` não existem no Worker | campo novo |
+| D4 | Sinalização `data_issues.inicio_futuro` ainda não existe no Worker (`needs_profile` e `sem_nascimento` já existem desde a D1) | campo novo |
 
 Sem divergência: janelas de 30, 84 e 90 dias, última aula, contagens por faixa e por semana, ocupação por turma, mapa de calor (contagens), técnicas, currículo e aprendizado, critérios de graduação, desfazer graduação.
 

@@ -2,7 +2,7 @@
 // Independente do Worker: não importa nada de web/. Lê linhas cruas do banco e devolve os mesmos indicadores.
 //
 // opts.legacy liga, regra por regra, o comportamento ATUAL do Worker no lugar da regra de referência:
-//   birth (D1), experience (D3), future (D4), newMonth (D5), avg (D6), weekly (D7).
+//   experience (D3), future (D4), newMonth (D5), avg (D6), weekly (D7).
 // Com todos ligados, a referência deve reproduzir o Worker; é assim que se prova que ela o entendeu
 // (passe A) antes de se ver onde a regra nova diverge (passe B).
 import { toDay, addDays, weekday, calendarMonths, ageYears, firstOfMonth, fromDay } from './dates.mjs';
@@ -22,7 +22,7 @@ const levelOf = (table, v) => { let i = 0; table.forEach(([min], k) => { if (v >
 const by = (rows, key) => { const m = new Map(); for (const r of rows) { const k = r[key]; if (!m.has(k)) m.set(k, []); m.get(k).push(r); } return m; };
 
 export function computeReference(data, today, opts = {}) {
-  const L = opts.legacy === 'all' ? { birth: 1, experience: 1, future: 1, newMonth: 1, avg: 1, weekly: 1 } : (opts.legacy || {});
+  const L = opts.legacy === 'all' ? { experience: 1, future: 1, newMonth: 1, avg: 1, weekly: 1 } : (opts.legacy || {});
   const T = toDay(today);
   const rules = Object.fromEntries(data.rules.map(r => [r.belt, r]));
   const lessonById = new Map(data.lessons.map(l => [l.id, l]));
@@ -86,21 +86,21 @@ export function computeReference(data, today, opts = {}) {
       if (r.degree_classes > 0) add('classes', sinceDegree, r.degree_classes);
     } else if (st.belt !== 'preta') {
       let nb;
-      if (st.belt === 'branca') nb = age === null ? (L.birth ? 'azul' : null) : age < 16 ? 'cinza' : 'azul';
-      else if (isKidBelt(st.belt)) nb = age === null ? (L.birth || st.belt === 'verde' ? 'azul' : KIDS[KIDS.indexOf(st.belt) + 1]) : (age < 16 && st.belt !== 'verde' ? KIDS[KIDS.indexOf(st.belt) + 1] : 'azul');
+      if (st.belt === 'branca') nb = age === null ? null : age < 16 ? 'cinza' : 'azul';
+      else if (isKidBelt(st.belt)) nb = age === null ? (st.belt === 'verde' ? 'azul' : KIDS[KIDS.indexOf(st.belt) + 1]) : (age < 16 && st.belt !== 'verde' ? KIDS[KIDS.indexOf(st.belt) + 1] : 'azul');
       else nb = ADULT[ADULT.indexOf(st.belt) + 1];
       next = { kind: 'faixa', to_belt: nb, to_degrees: 0 };
       if (r.belt_months != null) add('months', calendarMonths(st.belt_since, today), r.belt_months);
       if (r.belt_classes != null) add('classes', sinceBelt, r.belt_classes);
       if (r.curriculum_pct != null) add('curriculum', currPct, r.curriculum_pct);
       const minAge = nb === null ? null : (st.belt === 'branca' && nb === 'cinza') ? 4 : (nb === 'azul' && (st.belt === 'branca' || isKidBelt(st.belt))) ? 16 : r.next_min_age;
-      if (minAge != null) { if (age !== null) add('age', age, minAge); else if (L.birth) add('age', 0, minAge); }
+      if (minAge != null && age !== null) add('age', age, minAge);
     }
     const progress = crit.length ? Math.round(crit.reduce((t, c) => t + Math.min(1, c.target > 0 ? c.exact / c.target : 1), 0) / crit.length * 100) : 0;
     const ready = !!next && crit.length > 0 && crit.every(c => c.met);
     const issues = [];
     if (!st.birth_date) issues.push('sem_nascimento');
-    if (startFuture) issues.push('inicio_futuro');
+    if (startFuture && !L.future) issues.push('inicio_futuro');
     students[st.id] = {
       name: st.name, status: st.status, age, classes_total: total, last_attendance: last, days_absent: daysAbsent, at_risk: atRisk,
       classes_last_30d: rows.filter(r2 => within(30, r2)).length, weekly_avg: r1(num84, weeks), mat_hours: r1(rows.reduce((t, x) => t + x.mins, 0), 60),

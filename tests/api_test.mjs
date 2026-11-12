@@ -92,6 +92,22 @@ ok(d.student.metrics.classes_since_belt <= 1, 'contagem de aulas na faixa reinic
 ok((await call('POST', `/api/students/${s1.id}/promote`, { kind: 'faixa', to_belt: 'branca', override: true })).status === 400, 'não volta faixa');
 d = (await call('DELETE', '/api/promotions/' + d.promotions[0].id)).body;
 ok(d.student.belt === 'branca' && d.student.degrees === 4, 'desfazer graduação restaura faixa e graus');
+// D1: sem data de nascimento não se presume idade nem trilha (infantil/adulta)
+{
+  const sn = (await call('POST', '/api/students', { name: 'Sem Nascimento', start_date: ago(900), belt: 'branca', degrees: 4, belt_since: ago(800), degree_since: ago(300), imported_classes_belt: 200 })).body.student;
+  let m = (await call('GET', '/api/students/' + sn.id)).body.student.metrics;
+  ok(m.needs_profile === true && m.data_issues.includes('sem_nascimento'), 'D1: cadastro sem nascimento é sinalizado');
+  ok(m.next.kind === 'faixa' && m.next.to_belt === null && m.next.choice_needed === true, 'D1: próxima faixa fica a definir (sem presumir adulto)');
+  ok(!m.criteria.some(c => c.key === 'age'), 'D1: critério de idade não é avaliado sem nascimento');
+  ok(m.age === null && (await call('GET', '/api/students/' + s3.id)).body.student.metrics.needs_profile === false, 'D1: aluno com nascimento não é sinalizado');
+  const kid = (await call('POST', '/api/students', { name: 'Sem Nasc Amarela', start_date: ago(900), belt: 'amarela', degrees: 4, belt_since: ago(800), degree_since: ago(300) })).body.student;
+  m = (await call('GET', '/api/students/' + kid.id)).body.student.metrics;
+  ok(m.next.to_belt === 'laranja' && !m.next.choice_needed, 'D1: faixa infantil sem nascimento segue a trilha infantil (laranja, não azul)');
+  const p = await call('POST', `/api/students/${sn.id}/promote`, { kind: 'faixa', override: true });
+  ok(p.status === 400, 'D1: graduar faixa exige escolher a nova faixa');
+  const p2 = await call('POST', `/api/students/${sn.id}/promote`, { kind: 'faixa', to_belt: 'cinza', override: true });
+  ok(p2.status === 200 || p2.status === 201, 'D1: instrutor pode escolher explicitamente a faixa quando falta o nascimento');
+}
 
 // professor (não admin)
 ok((await call('POST', '/api/staff', { name: 'Prof Dois', email: 'p2@x.com', password: 'outrasenha2', role: 'professor' })).status === 201, 'admin cria professor');
@@ -116,7 +132,7 @@ cookie = profCookie;
 await call('POST', '/api/logout'); ok((await call('GET', '/api/state')).status === 401, 'logout encerra sessão');
 cookie = adminCookie;
 const st = (await call('GET', '/api/state')).body;
-ok(st.dashboard.kpis.active_students === 3 && st.dashboard.weekly.length === 12, 'painel calculado');
+ok(st.dashboard.kpis.active_students === 5 && st.dashboard.weekly.length === 12, 'painel calculado');
 ok(st.techniques.find(t => t.id === mata.id).times_taught === 13, 'técnica: vezes ensinada');
 ok(st.techniques.find(t => t.id === mata.id).last_taught === ago(1), 'técnica: última aula com presentes');
 // aula sem presentes também conta como técnica ensinada, com data

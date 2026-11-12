@@ -66,42 +66,6 @@
       }
     },
     {
-      "id": "D1-idade-sem-nascimento",
-      "classe": "regra-aprovada",
-      "regra": "D1",
-      "passe": "B",
-      "campos": [
-        "aluno:criteria.age.presente",
-        "aluno:next.to_belt",
-        "aluno:progress",
-        "aluno:ready"
-      ],
-      "estado": "aguarda aplicação no Worker",
-      "evidencia": "SemNascBrancaPronto (adulto, 4 graus, 900 dias, 200 aulas importadas, currículo dominado, sem data de nascimento): Worker usa idade 0 de 16, não fica pronto, progresso 75 e próxima faixa azul. Referência ignora o critério de idade: pronto, progresso 100, próxima faixa a definir. SemNascAmarelaPronto: Worker indica azul como próxima faixa; referência indica laranja.",
-      "contagem": {
-        "manual@2026-06-17": 14,
-        "manual@2026-04-30": 14,
-        "gerado@2026-06-17": 3
-      }
-    },
-    {
-      "id": "D1-sinalizacao-cadastro",
-      "classe": "campo-novo",
-      "regra": "D1",
-      "passe": "B",
-      "campos": [
-        "aluno:needs_profile",
-        "aluno:data_issues.sem_nascimento"
-      ],
-      "estado": "o Worker não tem o campo",
-      "evidencia": "Alunos sem data de nascimento passam a ser marcados como cadastro incompleto (needs_profile) para a interface pedir o complemento.",
-      "contagem": {
-        "manual@2026-06-17": 8,
-        "manual@2026-04-30": 8,
-        "gerado@2026-06-17": 14
-      }
-    },
-    {
       "id": "D3-experiencia-acumulada",
       "classe": "regra-aprovada",
       "regra": "D3",
@@ -140,9 +104,9 @@
       "regra": "D4",
       "passe": "B",
       "campos": [
-        "aluno:data_issues.inicio_futuro"
+        "aluno:data_issues"
       ],
-      "estado": "o Worker não tem o campo",
+      "estado": "o Worker ainda não sinaliza início futuro em data_issues",
       "evidencia": "Início no futuro é dado inválido e fica sinalizado em data_issues.",
       "contagem": {
         "manual@2026-06-17": 2,
@@ -203,17 +167,16 @@
     {
       "id": "B-efeito-no-painel",
       "classe": "derivado",
-      "regra": "D1",
+      "regra": "item 8",
       "passe": "B",
       "campos": [
         "painel:kpis.ready",
         "painel:ready_list",
         "painel:near_list"
       ],
-      "estado": "consequência de D1 (e, em 30/04, do item 8)",
-      "evidencia": "Alunos sem nascimento passam a contar como prontos; em 17/06 o total de prontos vai de 7 (Worker) para 11 (referência).",
+      "estado": "consequência da fronteira de fim de mês (item 8)",
+      "evidencia": "Em 30/04 o aluno FimDeMes entra em \"prontos\" na referência e em \"quase prontos\" no Worker (meses-calendário × aproximação).",
       "contagem": {
-        "manual@2026-06-17": 3,
         "manual@2026-04-30": 3
       }
     }

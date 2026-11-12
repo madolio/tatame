@@ -179,11 +179,12 @@ const curriculumFor = (belt, techniques) => {
   return techniques.filter(t => t.active && ADULT.indexOf(t.min_belt) <= rank);
 };
 
+// Sem data de nascimento, a faixa branca não diz se o aluno segue a trilha infantil ou a adulta: devolve undefined
+// (próxima faixa "a definir", escolhida pelo instrutor). Faixas infantis já indicam a trilha infantil.
 function nextBelt(st, age) {
   if (st.belt === 'preta') return null;
-  const kid = age != null && age < 16;
-  if (st.belt === 'branca') return kid ? 'cinza' : 'azul';
-  if (KIDS.includes(st.belt)) return kid && st.belt !== 'verde' ? KIDS[KIDS.indexOf(st.belt) + 1] : 'azul';
+  if (st.belt === 'branca') return age == null ? undefined : age < 16 ? 'cinza' : 'azul';
+  if (KIDS.includes(st.belt)) return st.belt !== 'verde' && (age == null || age < 16) ? KIDS[KIDS.indexOf(st.belt) + 1] : 'azul';
   return ADULT[ADULT.indexOf(st.belt) + 1];
 }
 
@@ -230,20 +231,22 @@ function studentMetrics(st, core, today, attByStudent, skillsByStudent, lessonTe
     if (r.degree_classes > 0) add('classes', 'Aulas desde o último grau', sinceDegree, r.degree_classes, 'aulas');
   } else {
     const nb = nextBelt(st, age);
-    if (nb) {
-      next = { kind: 'faixa', to_belt: nb, to_degrees: 0 };
+    if (nb !== null) {
+      next = { kind: 'faixa', to_belt: nb || null, to_degrees: 0 };
+      if (nb === undefined) next.choice_needed = true;
       if (r.belt_months != null) add('months', 'Tempo na faixa', monthsBetween(st.belt_since, today), r.belt_months, 'meses');
       if (r.belt_classes != null) add('classes', 'Aulas na faixa', sinceBelt, r.belt_classes, 'aulas');
       if (r.curriculum_pct != null) add('curriculum', 'Currículo dominado (nível ≥ 3)', curriculumPct, r.curriculum_pct, '%');
+      // Sem data de nascimento o critério de idade não é avaliado (nem bloqueia): o cadastro fica sinalizado.
       const minAge = st.belt === 'branca' && nb === 'cinza' ? KID_MIN_AGE.cinza : nb === 'azul' && KIDS.includes(st.belt) ? 16 : r.next_min_age;
-      if (minAge != null) add('age', 'Idade mínima (IBJJF)', age ?? 0, minAge, 'anos');
+      if (minAge != null && age != null) add('age', 'Idade mínima (IBJJF)', age, minAge, 'anos');
     }
   }
   const progress = crit.length ? Math.round(crit.reduce((t, c) => t + Math.min(1, c.target > 0 ? c.current / c.target : 1), 0) / crit.length * 100) : 0;
   const ready = !!next && crit.length > 0 && crit.every(c => c.met);
   const daysAbsent = last ? daysBetween(last, today) : daysBetween(st.start_date, today);
   return {
-    age, classes_total: total, last_attendance: last, days_absent: daysAbsent,
+    age, needs_profile: !st.birth_date, data_issues: st.birth_date ? [] : ['sem_nascimento'], classes_total: total, last_attendance: last, days_absent: daysAbsent,
     at_risk: st.status === 'ativo' && daysAbsent >= 14,
     classes_last_30d: last30, weekly_avg: Math.round(weekly * 10) / 10, mat_hours: Math.round(hours * 10) / 10,
     classes_since_degree: sinceDegree, classes_since_belt: sinceBelt,
@@ -495,11 +498,11 @@ async function promote(db, staff, id, b) {
     toBelt = oneOf(b.to_belt, BELTS, 'Nova faixa');
     if (!toBelt) bad('Escolha a nova faixa.');
     if (BELTS.indexOf(toBelt) <= BELTS.indexOf(st.belt)) bad('A nova faixa precisa ser acima da atual.');
-    if (KIDS.includes(toBelt) && toBelt !== 'branca' && (st.metrics.age == null || st.metrics.age >= 16)) bad('Faixas infantis são para alunos com até 15 anos (informe a data de nascimento).');
+    if (KIDS.includes(toBelt) && toBelt !== 'branca' && (st.metrics.age != null && st.metrics.age >= 16)) bad('Faixas infantis são para alunos com até 15 anos.');
     toDeg = 0;
   }
   const m = st.metrics;
-  const criteriaMet = m.next && m.next.kind === kind && m.next.to_belt === toBelt && m.ready ? 1 : 0;
+  const criteriaMet = m.next && m.next.kind === kind && (m.next.to_belt === toBelt || (m.next.choice_needed && ['cinza', 'azul'].includes(toBelt))) && m.ready ? 1 : 0;
   if (!criteriaMet && !b.override) throw new HttpError(409, 'O aluno ainda não cumpre todos os critérios. Confirme para graduar mesmo assim.');
   const pid = uuid();
   await db.batch([
@@ -831,7 +834,7 @@ async function route(req, env, url, ctx) {
     const head = ['Nome', 'Apelido', 'Situação', 'Faixa', 'Graus', 'Na faixa desde', 'Último grau', 'Início', 'Idade', 'Aulas (total)', 'Aulas 30 dias', 'Média semanal', 'Última presença', 'Experiência', 'Aprendizado %', 'Próxima graduação', 'Apto'];
     const rows = C.students.map(s => [s.name, s.nickname, s.status, s.belt, s.degrees, s.belt_since, s.degree_since, s.start_date, s.metrics.age, s.metrics.classes_total, s.metrics.classes_last_30d,
       String(s.metrics.weekly_avg).replace('.', ','), s.metrics.last_attendance, s.metrics.experience.label, s.metrics.learning.pct,
-      s.metrics.next ? (s.metrics.next.kind === 'grau' ? `${s.metrics.next.to_degrees}º grau` : `faixa ${s.metrics.next.to_belt}`) : '', s.metrics.ready ? 'sim' : 'não']);
+      s.metrics.next ? (s.metrics.next.kind === 'grau' ? `${s.metrics.next.to_degrees}º grau` : `faixa ${s.metrics.next.to_belt || 'a definir'}`) : '', s.metrics.ready ? 'sim' : 'não']);
     const csv = '﻿' + [head, ...rows].map(r => r.map(q).join(';')).join('\r\n');
     return new Response(csv, { headers: { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': 'attachment; filename="alunos.csv"', 'cache-control': 'no-store' } });
   }

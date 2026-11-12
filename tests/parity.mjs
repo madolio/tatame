@@ -28,7 +28,8 @@ function flatWorkerStudent(s) {
     'learning.pct': m.learning.pct, 'learning.level': m.learning.level, 'learning.label': m.learning.label, 'learning.curriculum_size': m.learning.curriculum_size,
     'learning.mastered': m.learning.mastered, 'learning.curriculum_pct': m.learning.curriculum_pct, techniques_seen: m.techniques_seen,
     'next.kind': m.next ? m.next.kind : null, 'next.to_belt': m.next ? m.next.to_belt : null, 'next.to_degrees': m.next ? m.next.to_degrees : null,
-    progress: m.progress, ready: m.ready, difficulties: m.difficulties
+    progress: m.progress, ready: m.ready, difficulties: m.difficulties,
+    needs_profile: m.needs_profile, data_issues: m.data_issues.join(',')
   };
   for (const c of m.criteria) { f[`criteria.${c.key}.target`] = c.target; f[`criteria.${c.key}.met`] = c.met; f[`criteria.${c.key}.current`] = c.current; }
   return f;
@@ -42,7 +43,8 @@ function flatRefStudent(s) {
     'learning.pct': s.learning.pct, 'learning.level': s.learning.level, 'learning.label': s.learning.label, 'learning.curriculum_size': s.learning.curriculum_size,
     'learning.mastered': s.learning.mastered, 'learning.curriculum_pct': s.learning.curriculum_pct, techniques_seen: s.techniques_seen,
     'next.kind': s.next ? s.next.kind : null, 'next.to_belt': s.next ? s.next.to_belt : null, 'next.to_degrees': s.next ? s.next.to_degrees : null,
-    progress: s.progress, ready: s.ready, difficulties: s.difficulties
+    progress: s.progress, ready: s.ready, difficulties: s.difficulties,
+    needs_profile: s.needs_profile, data_issues: s.data_issues.join(',')
   };
   for (const c of s.criteria) { f[`criteria.${c.key}.target`] = c.target; f[`criteria.${c.key}.met`] = c.met; f[`criteria.${c.key}.current`] = c.current; }
   return f;
@@ -86,9 +88,6 @@ function compare(state, ref, passe) {
       }
       const d = compareField(field, wf[field], rf[field]); if (d) div('aluno', rs.name, field, d.w, d.r);
     }
-    // campos que só existem na referência: sinalizações de cadastro (D1, D4)
-    if (passe === 'B' && rs.needs_profile) div('aluno', rs.name, 'needs_profile', undefined, true);
-    if (passe === 'B') for (const issue of rs.data_issues) div('aluno', rs.name, `data_issues.${issue}`, undefined, true);
     const h = ref.history[id]; compared++;
     if (!h.consistent) div('historico', rs.name, 'evolucao_faixa_grau', 'inconsistente', h.problems.join('; '));
   }
