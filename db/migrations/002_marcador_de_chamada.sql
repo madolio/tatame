@@ -3,7 +3,7 @@
 --   roll_called = 0    aula dada sem chamada
 --   roll_called IS NULL  desconhecido (histórico anterior à migração, sem evidência)
 -- Aplicar UMA vez, antes de publicar o Worker que lê a coluna (ALTER TABLE ADD COLUMN não é idempotente no SQLite).
--- Reversão: 002_marcador_de_chamada.down.sql.
+-- Reversão: db/rollbacks/002_marcador_de_chamada.down.sql.
 ALTER TABLE lessons ADD COLUMN roll_called INTEGER CHECK (roll_called IN (0, 1));
 
 -- Backfill só com evidência confiável: aula com ao menos uma presença registrada teve chamada.

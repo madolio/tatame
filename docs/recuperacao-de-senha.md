@@ -48,7 +48,7 @@ A versão nova do Worker precisa das tabelas `password_resets` e `audit_log`. A 
 npx wrangler d1 execute NOME_DO_BANCO_D1 --remote --file db/migrations/001_recuperacao_senha.sql
 ```
 
-Aplique **antes** de publicar o Worker novo. Para reverter: `db/migrations/001_recuperacao_senha.down.sql` (apaga só essas duas tabelas). Faça um backup antes (`npx wrangler d1 export NOME_DO_BANCO_D1 --remote --output backup.sql`).
+Aplique **antes** de publicar o Worker novo. Para reverter: `db/rollbacks/001_recuperacao_senha.down.sql` (apaga só essas duas tabelas). Faça um backup antes (`npx wrangler d1 export NOME_DO_BANCO_D1 --remote --output backup.sql`).
 
 ## Preparado para e-mail no futuro
 

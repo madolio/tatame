@@ -1,6 +1,6 @@
 -- Migração 001 — recuperação de senha por código (entrega manual) e registro de eventos de segurança.
 -- Só cria tabelas novas; não altera nem apaga nada que já existe. Pode rodar de novo (IF NOT EXISTS).
--- Reverter: db/migrations/001_recuperacao_senha.down.sql
+-- Reverter: db/rollbacks/001_recuperacao_senha.down.sql
 -- Aplicar:  npx wrangler d1 execute <NOME_DO_BANCO> --remote --file db/migrations/001_recuperacao_senha.sql
 
 -- Um código pendente por pessoa. Guarda apenas o hash (SHA-256) do código, nunca o código.
