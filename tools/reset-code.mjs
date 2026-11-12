@@ -8,7 +8,7 @@
 // Procedimento humano antes de rodar: confirme que quem pede é mesmo o administrador (ligue para um número já
 // conhecido, não para o que veio na mensagem). Entregue o código por um canal diferente do que pediu a ajuda.
 import { createHash, randomBytes } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { runWrangler } from './db/wrangler.mjs';
 import { createInterface } from 'node:readline/promises';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -53,7 +53,7 @@ function args(argv) {
 function d1(db, target, sql, dir) {
   const f = join(dir, 'q' + Math.random().toString(36).slice(2) + '.sql');
   writeFileSync(f, sql);
-  const r = spawnSync(`npx wrangler d1 execute ${db} ${target} --json --file "${f}"`, { encoding: 'utf8', shell: true }); // db e target já validados em main()
+  const r = runWrangler(['d1', 'execute', db, target, '--json', '--file', f]); // wrangler fixado no projeto, sem shell
   if (r.status !== 0) throw new Error('wrangler falhou:\n' + (r.stderr || r.stdout || '').slice(0, 1500));
   try { return JSON.parse(r.stdout); } catch { return []; }
 }

@@ -8,6 +8,7 @@
     "test:all": "npm test && node tests/e2e.mjs"
   },
   "devDependencies": {
-    "playwright-core": "^1.50.0"
+    "playwright-core": "^1.50.0",
+    "wrangler": "4.155.0"
   }
 }
