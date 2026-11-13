@@ -23,7 +23,7 @@ const state = id => JSON.stringify({ l: DB.raw.prepare('SELECT * FROM lessons WH
 const audits = ev => DB.raw.prepare('SELECT * FROM audit_log WHERE event = ? ORDER BY id').all(ev);
 
 const code = generateCode(); DB.raw.exec(buildSetupSql(code));
-const admin = (await call('', 'POST', '/api/setup', { academy_name: 'Academia', name: 'Admin', email: 'admin@x.test', password: 'senhaforte1', setup_code: code })).cookie;
+const admin = (await call('', 'POST', '/api/setup', { academy_name: 'Academia', name: 'Admin', email: 'admin@x.test', password: 'cordafina-71', setup_code: code })).cookie;
 await call(admin, 'POST', '/api/staff', { name: 'Prof Um', email: 'p1@x.test', password: 'senhaprof1', role: 'professor' });
 await call(admin, 'POST', '/api/staff', { name: 'Prof Dois', email: 'p2@x.test', password: 'senhaprof2', role: 'professor' });
 const p1 = (await call('', 'POST', '/api/login', { email: 'p1@x.test', password: 'senhaprof1' })).cookie;

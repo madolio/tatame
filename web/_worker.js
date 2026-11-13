@@ -126,7 +126,27 @@ async function hashPassword(password, saltB64) {
 const sha256 = async s => hex(await crypto.subtle.digest('SHA-256', enc.encode(s)));
 const safeEqual = (a, b) => { if (a.length !== b.length) return false; let r = 0; for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i); return r === 0; };
 const uuid = () => crypto.randomUUID();
-const checkPassword = p => { if (typeof p !== 'string' || p.length < 8 || p.length > 128) bad('A senha deve ter entre 8 e 128 caracteres.'); return p; };
+// Política para senhas NOVAS (criadas ou trocadas). O login não aplica a política: senhas antigas de 8–9 caracteres continuam
+// valendo até o dono trocar. Sem exigência artificial de maiúscula/número/símbolo (NIST SP 800-63B): tamanho + recusa do óbvio.
+const PASSWORD_MIN = 10, PASSWORD_MAX = 128;
+// Senhas comuns (≥ 10 caracteres, as menores já caem pelo tamanho), comparadas em minúsculas. Lista curta e embutida: barra o
+// que um ataque de dicionário tenta primeiro, inclusive variações óbvias em português e do contexto (academia, jiu-jitsu).
+const COMMON_PASSWORDS = new Set(['1234567890', '12345678910', '0123456789', '0987654321', '9876543210', '1111111111', '1234512345', '1122334455', '1212121212', '1qaz2wsx3edc',
+  '1q2w3e4r5t', '1q2w3e4r5t6y', 'q1w2e3r4t5', 'qwertyuiop', 'qwerty1234', 'qwerty12345', 'asdfghjkl1', 'asdfghjklç', 'zxcvbnm123', 'abcdefghij', 'abc1234567', 'a123456789', '123456789a', 'abcd123456',
+  'password12', 'password123', 'password1234', 'passw0rd123', 'iloveyou12', 'iloveyou123', 'welcome123', 'letmein123', 'admin12345', 'admin123456', 'administrator', 'administrador', 'changeme123',
+  'senha12345', 'senha123456', 'senhasenha', 'minhasenha', 'minhasenha1', 'minhasenha123', 'senhaforte', 'senhaforte1', 'senha@1234', 'mudar12345', 'mudarsenha', 'trocarsenha', 'novasenha1',
+  'brasil1234', 'brasil12345', 'flamengo123', 'corinthians', 'corinthians1', 'palmeiras1', 'palmeiras123', 'saopaulo123', 'vasco12345', 'gremio1234', 'cruzeiro123', 'santos1234',
+  'jiujitsu123', 'jiu-jitsu123', 'jiujitsu2024', 'jiujitsu2025', 'jiujitsu2026', 'bjj1234567', 'tatame1234', 'tatame12345', 'tatame2024', 'tatame2025', 'tatame2026', 'academia123', 'academia1234',
+  'faixapreta', 'faixapreta1', 'faixapreta123', 'oss1234567', 'gracie1234', 'professor1', 'professor123', 'mestre1234']);
+function checkPassword(p, { email = null, name = null } = {}) {
+  if (typeof p !== 'string' || p.length < PASSWORD_MIN || p.length > PASSWORD_MAX) bad(`A senha deve ter entre ${PASSWORD_MIN} e ${PASSWORD_MAX} caracteres.`);
+  const low = p.trim().toLowerCase();
+  if (/^(.)\1*$/su.test(p)) bad('A senha não pode ser um único caractere repetido.');
+  if (COMMON_PASSWORDS.has(low)) bad('Essa senha é muito comum. Escolha outra (uma frase curta funciona bem).');
+  if (email && low === String(email).trim().toLowerCase()) bad('A senha não pode ser igual ao e-mail.');
+  if (name && low === String(name).trim().toLowerCase()) bad('A senha não pode ser igual ao nome.');
+  return p;
+}
 const checkEmail = e => { const s = str(e, { max: 120, field: 'E-mail', required: true }).toLowerCase(); if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s)) bad('E-mail inválido.'); return s; };
 
 // ---------- banco ----------
@@ -174,9 +194,58 @@ async function currentStaff(req, db, ctx = {}) {
   return me;
 }
 
-// Limite de tentativas: por (e-mail, IP) para quem erra a própria senha, e por IP para quem varre vários e-mails.
-// A chave não é só o e-mail de propósito: senão um estranho bloquearia o dono da conta a partir de outro lugar.
-const LOGIN_LIMITS = { pair: 8, ip: 30 };
+// Limite de tentativas (V2), três contadores na mesma tabela login_attempts (janela de 15 min):
+//   pair     (e-mail, rede): quem erra a própria senha                         8
+//   ip       (rede): quem varre vários e-mails a partir do mesmo lugar         30
+//   account  (e-mail, de qualquer rede): força bruta distribuída               20 — vale SÓ para aparelho desconhecido
+// O contador da conta é a soma das linhas "pair" do e-mail (sem linha extra por tentativa). Conta inexistente conta igual
+// (a resposta não pode revelar se o e-mail existe). Para não deixar um estranho trancar o dono, quem apresenta o cookie de
+// aparelho conhecido daquela conta não passa pelo limite da conta (os limites por par e por rede continuam valendo).
+const LOGIN_LIMITS = { pair: 8, ip: 30, account: 20 };
+// Rede da origem: IPv4 = endereço inteiro; IPv6 = prefixo /64 (um cliente costuma receber a /64 inteira e trocar de endereço
+// à vontade dentro dela); IPv4 mapeado em IPv6 (::ffff:a.b.c.d) = IPv4. Sem cabeçalho ou com valor inválido: uma chave única
+// compartilhada por todos nessa condição (falha fechada: não vira "sem limite"). O cf-connecting-ip é definido pela Cloudflare.
+const IPV4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+function networkOf(raw) {
+  const s = String(raw || '').trim().toLowerCase();
+  if (IPV4.test(s)) return s;
+  const mapped = s.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (mapped && IPV4.test(mapped[1])) return mapped[1];
+  if (!/^[0-9a-f:]{2,39}$/.test(s) || (s.match(/::/g) || []).length > 1) return 'desconhecido';
+  const [head, tail] = s.includes('::') ? s.split('::') : [s, null];
+  const h = head ? head.split(':') : [], t = tail ? tail.split(':') : [];
+  if ([...h, ...t].some(x => !/^[0-9a-f]{1,4}$/.test(x))) return 'desconhecido';
+  const groups = tail === null ? h : [...h, ...Array(8 - h.length - t.length).fill('0'), ...t];
+  if (groups.length !== 8) return 'desconhecido';
+  return groups.slice(0, 4).map(g => parseInt(g, 16).toString(16)).join(':') + '::/64';
+}
+
+// Cookie de aparelho conhecido (só para a política de bloqueio; NÃO autentica nada). Um por conta no mesmo navegador:
+//   nome  tatame_dev_<12 hex de SHA-256(id da conta)>      valor  v1.<id da conta>.<emitido em, segundos>.<HMAC, hex>
+//   chave HKDF-SHA256(ikm = hash da senha guardado no banco, salt = id da conta, info = "tatame:aparelho-conhecido:v1")
+//         -> chave HMAC-SHA256 só desta finalidade (separação de domínio). O cookie não contém senha nem hash.
+// Trocar a senha muda o hash e, portanto, a chave: todo cookie anterior deixa de valer sozinho. 90 dias, renovado a cada login.
+// Sem estado no banco: logins simultâneos emitem cookies independentes e igualmente válidos (não há o que disputar).
+const DEVICE_DAYS = 90, DEVICE_PREFIX = 'tatame_dev_';
+const deviceCookieName = async staffId => DEVICE_PREFIX + (await sha256('tatame-dev-name:' + staffId)).slice(0, 12);
+async function deviceMac(staff, issued) {
+  const ikm = await crypto.subtle.importKey('raw', Uint8Array.from(atob(staff.pass_hash), c => c.charCodeAt(0)), 'HKDF', false, ['deriveKey']);
+  const key = await crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: enc.encode(staff.id), info: enc.encode('tatame:aparelho-conhecido:v1') }, ikm, { name: 'HMAC', hash: 'SHA-256', length: 256 }, false, ['sign']);
+  return hex(await crypto.subtle.sign('HMAC', key, enc.encode(`v1|${staff.id}|${issued}`)));
+}
+async function deviceCookie(staff) {
+  const issued = Math.floor(Date.now() / 1000);
+  return `${await deviceCookieName(staff.id)}=v1.${staff.id}.${issued}.${await deviceMac(staff, issued)}; Path=/api/login; HttpOnly; Secure; SameSite=Strict; Max-Age=${DEVICE_DAYS * 86400}`;
+}
+async function knownDevice(req, staff) {
+  if (!staff) return false;
+  const v = cookieOf(req, await deviceCookieName(staff.id));
+  const m = v && /^v1\.([0-9a-f-]{36})\.(\d{9,11})\.([0-9a-f]{64})$/.exec(v);
+  if (!m || m[1] !== staff.id) return false;
+  const issued = Number(m[2]), now = Date.now() / 1000;
+  if (issued > now + 300 || now - issued >= DEVICE_DAYS * 86400) return false;
+  return safeEqual(await deviceMac(staff, issued), m[3]);
+}
 async function rateLimited(db, pairs) {
   for (const [k, max] of pairs) {
     const r = await first(db, "SELECT count(*) n FROM login_attempts WHERE key = ? AND at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-15 minutes')", k);
@@ -184,6 +253,8 @@ async function rateLimited(db, pairs) {
   }
   return false;
 }
+// Erros recentes de um e-mail somando todas as redes (faixa de chaves "email:<e-mail>|ip:", usa o índice (key, at)).
+const accountFailures = async (db, email) => (await first(db, "SELECT count(*) n FROM login_attempts WHERE key >= ? AND key < ? AND at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-15 minutes')", `email:${email}|ip:`, `email:${email}|ip;`)).n;
 // Sal fixo para conferir uma senha contra uma conta que não existe: o tempo de resposta fica igual ao de uma conta real.
 const GHOST_SALT = 'dGF0YW1lLWdob3N0LXNhbHQ=';
 // ---------- recuperação de senha por código ----------
@@ -641,7 +712,7 @@ async function route(req, env, url, ctx) {
     if (!(code.length >= 26 && live && safeEqual(given, tok.h))) throw new HttpError(403, SETUP_DENIED);
     const academy = str(b.academy_name, { min: 2, max: 80, field: 'Nome da academia', required: true });
     const name = str(b.name, { min: 2, max: 80, field: 'Seu nome', required: true });
-    const email = checkEmail(b.email), pw = checkPassword(b.password);
+    const email = checkEmail(b.email), pw = checkPassword(b.password, { email, name });
     const { hash, salt } = await hashPassword(pw);
     const belt = oneOf(b.belt, BELTS, 'Faixa', null);
     const id = uuid();
@@ -672,23 +743,44 @@ async function route(req, env, url, ctx) {
 
   if (path === '/api/login' && method === 'POST') {
     const b = await body();
-    const email = String(b.email || '').trim().toLowerCase(), pw = String(b.password || '');
-    const ip = req.headers.get('cf-connecting-ip') || 'local';
-    const pairKey = 'email:' + email + '|ip:' + ip, ipKey = 'ip:' + ip;
-    if (await rateLimited(db, [[pairKey, LOGIN_LIMITS.pair], [ipKey, LOGIN_LIMITS.ip]])) throw new HttpError(429, 'Muitas tentativas. Aguarde 15 minutos e tente de novo.');
+    const email = String(b.email || '').trim().toLowerCase().slice(0, 120), pw = String(b.password || '');
+    const net = networkOf(req.headers.get('cf-connecting-ip'));
+    const pairKey = 'email:' + email + '|ip:' + net, ipKey = 'ip:' + net;
+    const LOCKED = 'Muitas tentativas. Aguarde 15 minutos e tente de novo.';
+    if (await rateLimited(db, [[pairKey, LOGIN_LIMITS.pair], [ipKey, LOGIN_LIMITS.ip]])) throw new HttpError(429, LOCKED);
     const s = await first(db, 'SELECT * FROM staff WHERE email = ? AND active = 1', email);
+    const known = await knownDevice(req, s);
+    const acct = await accountFailures(db, email);
+    if (!known && acct >= LOGIN_LIMITS.account) throw new HttpError(429, LOCKED);
     // Sempre calcula o hash (contra o sal real ou o fantasma), para a resposta não revelar se o e-mail existe.
     const computed = (await hashPassword(pw, s ? s.pass_salt : GHOST_SALT)).hash;
     const ok = !!s && safeEqual(computed, s.pass_hash);
     if (!ok) {
+      // Um registro login_locked só quando um limite é atingido por ESTE erro (não uma linha por senha errada).
+      const reached = [];
+      const counts = await first(db, "SELECT (SELECT count(*) FROM login_attempts WHERE key = ? AND at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-15 minutes')) p, (SELECT count(*) FROM login_attempts WHERE key = ? AND at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-15 minutes')) i", pairKey, ipKey);
+      if (counts.p + 1 === LOGIN_LIMITS.pair) reached.push('par');
+      if (counts.i + 1 === LOGIN_LIMITS.ip) reached.push('rede');
+      if (acct + 1 === LOGIN_LIMITS.account) reached.push('conta');
       await db.batch([
         db.prepare('INSERT INTO login_attempts (key) VALUES (?)').bind(pairKey), db.prepare('INSERT INTO login_attempts (key) VALUES (?)').bind(ipKey),
-        db.prepare("DELETE FROM login_attempts WHERE at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 hour')")
+        db.prepare("DELETE FROM login_attempts WHERE at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 hour')"),
+        ...(reached.length ? [audit(db, 'login_locked', s ? s.id : null, JSON.stringify({ limites: reached, rede: net, conta_existe: !!s }))] : [])
       ]);
       throw new HttpError(401, 'E-mail ou senha incorretos.');
     }
-    await run(db, 'DELETE FROM login_attempts WHERE key = ?', pairKey);
-    return json({ ok: true }, 200, { 'set-cookie': await createSession(db, s.id) });
+    // Sucesso: sessão, limpeza do par, auditoria e cookie de aparelho num único batch (tudo ou nada).
+    const token = hex(crypto.getRandomValues(new Uint8Array(32)));
+    await db.batch([
+      db.prepare('INSERT INTO auth_sessions (token_hash, staff_id, expires_at) VALUES (?, ?, ?)').bind(await sha256(token), s.id, new Date(Date.now() + SESSION_DAYS * 864e5).toISOString()),
+      db.prepare("DELETE FROM auth_sessions WHERE expires_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"),
+      db.prepare('DELETE FROM login_attempts WHERE key = ?').bind(pairKey),
+      audit(db, 'login_ok', s.id, JSON.stringify({ rede: net, aparelho_conhecido: known }))
+    ]);
+    const h = new Headers({ 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+    h.append('set-cookie', sessionCookie(token, SESSION_DAYS * 86400));
+    h.append('set-cookie', await deviceCookie(s));
+    return new Response(JSON.stringify({ ok: true }), { status: 200, headers: h });
   }
 
   if (path === '/api/reset' && method === 'POST') {
@@ -697,7 +789,7 @@ async function route(req, env, url, ctx) {
     const ip = req.headers.get('cf-connecting-ip') || 'local';
     const pairKey = 'reset:email:' + email + '|ip:' + ip, ipKey = 'reset:ip:' + ip;
     if (await rateLimited(db, [[pairKey, LOGIN_LIMITS.pair], [ipKey, LOGIN_LIMITS.ip]])) throw new HttpError(429, 'Muitas tentativas. Aguarde 15 minutos e tente de novo.');
-    const newPw = checkPassword(b.password);
+    const newPw = checkPassword(b.password, { email });
     if (b.password_confirm !== undefined && b.password_confirm !== newPw) bad('As senhas não conferem.');
     const fail = async (staffId, why) => {
       const st = [db.prepare('INSERT INTO login_attempts (key) VALUES (?)').bind(pairKey), db.prepare('INSERT INTO login_attempts (key) VALUES (?)').bind(ipKey),
@@ -749,7 +841,7 @@ async function route(req, env, url, ctx) {
     const b = await body();
     const s = await first(db, 'SELECT * FROM staff WHERE id = ?', me.id);
     if (!safeEqual((await hashPassword(String(b.current || ''), s.pass_salt)).hash, s.pass_hash)) bad('Senha atual incorreta.');
-    const { hash, salt } = await hashPassword(checkPassword(b.password));
+    const { hash, salt } = await hashPassword(checkPassword(b.password, { email: s.email, name: s.name }));
     await db.batch([db.prepare('UPDATE staff SET pass_hash = ?, pass_salt = ? WHERE id = ?').bind(hash, salt, me.id),
       db.prepare('DELETE FROM auth_sessions WHERE staff_id = ?').bind(me.id)]);
     return json({ ok: true }, 200, { 'set-cookie': await createSession(db, me.id) });
@@ -937,7 +1029,7 @@ async function route(req, env, url, ctx) {
     const b = await body();
     const email = checkEmail(b.email);
     if (await first(db, 'SELECT id FROM staff WHERE email = ?', email)) throw new HttpError(409, 'Já existe alguém da equipe com esse e-mail.');
-    const { hash, salt } = await hashPassword(checkPassword(b.password));
+    const { hash, salt } = await hashPassword(checkPassword(b.password, { email, name: b.name }));
     const id = uuid();
     await run(db, 'INSERT INTO staff (id, name, email, pass_hash, pass_salt, role, belt) VALUES (?,?,?,?,?,?,?)', id, str(b.name, { min: 2, max: 80, field: 'Nome', required: true }), email, hash, salt, oneOf(b.role, ['admin', 'professor'], 'Função', 'professor'), oneOf(b.belt, BELTS, 'Faixa', null));
     return json(await first(db, 'SELECT id, name, email, role, belt, active FROM staff WHERE id = ?', id), 201);
@@ -950,7 +1042,7 @@ async function route(req, env, url, ctx) {
     const role = oneOf(b.role, ['admin', 'professor'], 'Função', ex.role), active = flag(b.active, 'Ativo', 1);
     if (ex.id === me.id && (role !== 'admin' || !active)) bad('Você não pode remover seu próprio acesso de administrador.');
     const stmts = [db.prepare('UPDATE staff SET name=?, role=?, belt=?, active=? WHERE id=?').bind(str(b.name ?? ex.name, { min: 2, max: 80, field: 'Nome', required: true }), role, oneOf(b.belt, BELTS, 'Faixa', null), active, ex.id)];
-    if (b.password) { const { hash, salt } = await hashPassword(checkPassword(b.password)); stmts.push(db.prepare('UPDATE staff SET pass_hash=?, pass_salt=? WHERE id=?').bind(hash, salt, ex.id), db.prepare('DELETE FROM auth_sessions WHERE staff_id = ?').bind(ex.id)); }
+    if (b.password) { const { hash, salt } = await hashPassword(checkPassword(b.password, { email: ex.email, name: b.name ?? ex.name })); stmts.push(db.prepare('UPDATE staff SET pass_hash=?, pass_salt=? WHERE id=?').bind(hash, salt, ex.id), db.prepare('DELETE FROM auth_sessions WHERE staff_id = ?').bind(ex.id)); }
     if (!active) stmts.push(db.prepare('DELETE FROM auth_sessions WHERE staff_id = ?').bind(ex.id));
     await db.batch(stmts);
     return json(await first(db, 'SELECT id, name, email, role, belt, active FROM staff WHERE id = ?', ex.id));

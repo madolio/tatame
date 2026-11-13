@@ -20,11 +20,11 @@ const ago = d => new Date(Date.parse(today) - d * 864e5).toISOString().slice(0, 
 
 const SETUP = generateCode(); DB.raw.exec(buildSetupSql(SETUP));
 ok((await call('GET', '/api/status')).body.setup_code_required, 'precisa configurar com código');
-ok((await call('POST', '/api/setup', { academy_name: 'Invasor', name: 'Invasor', email: 'x@x.com', password: 'senhaforte1', setup_code: 'errado' })).status === 403, 'sem o código: bloqueado');
+ok((await call('POST', '/api/setup', { academy_name: 'Invasor', name: 'Invasor', email: 'x@x.com', password: 'cordafina-71', setup_code: 'errado' })).status === 403, 'sem o código: bloqueado');
 ok((await call('GET', '/api/state')).status === 401, 'sem login: 401');
 ok((await call('POST', '/api/setup', { academy_name: 'X', name: 'Prof', email: 'p@x.com', password: 'curta', setup_code: SETUP })).status === 400, 'senha curta recusada');
-ok((await call('POST', '/api/setup', { academy_name: 'Academia Teste', name: 'Professor', email: 'prof@x.com', password: 'senhaforte1' }, { csrf: false })).status === 403, 'CSRF bloqueado');
-ok((await call('POST', '/api/setup', { academy_name: 'Academia Teste', name: 'Professor', email: 'prof@x.com', password: 'senhaforte1', setup_code: SETUP.toLowerCase().replace(/-/g, ' ') })).status === 201, 'setup cria admin (código aceito sem diferenciar maiúsculas e separadores)');
+ok((await call('POST', '/api/setup', { academy_name: 'Academia Teste', name: 'Professor', email: 'prof@x.com', password: 'cordafina-71' }, { csrf: false })).status === 403, 'CSRF bloqueado');
+ok((await call('POST', '/api/setup', { academy_name: 'Academia Teste', name: 'Professor', email: 'prof@x.com', password: 'cordafina-71', setup_code: SETUP.toLowerCase().replace(/-/g, ' ') })).status === 201, 'setup cria admin (código aceito sem diferenciar maiúsculas e separadores)');
 let adminCookie = cookie;
 
 // sessão: renova quando faltam menos de 15 dias; não renova antes; teto de 90 dias desde o login
@@ -39,9 +39,9 @@ const exp = DB.raw.prepare('SELECT expires_at e FROM auth_sessions').get().e;
 ok(r.status === 200 && /tatame_sid=[0-9a-f]{64}; Path=\/; HttpOnly; Secure; SameSite=Strict; Max-Age=\d+/.test(r.headers.get('set-cookie')) && exp > iso(29) && exp < iso(31), 'sessão com 10 dias restantes renova por mais 30 e reenvia o cookie seguro');
 sess('created_at', iso(-91));
 ok((await rawCall('/api/me')).status === 401 && DB.raw.prepare('SELECT count(*) n FROM auth_sessions').get().n === 0, 'sessão com mais de 90 dias desde o login é encerrada');
-cookie = ''; ok((await call('POST', '/api/login', { email: 'prof@x.com', password: 'senhaforte1' })).status === 200, 'admin entra de novo');
+cookie = ''; ok((await call('POST', '/api/login', { email: 'prof@x.com', password: 'cordafina-71' })).status === 200, 'admin entra de novo');
 adminCookie = cookie;
-ok((await call('POST', '/api/setup', { academy_name: 'Outra', name: 'Hacker', email: 'h@x.com', password: 'senhaforte1' })).status === 409, 'setup não roda 2x');
+ok((await call('POST', '/api/setup', { academy_name: 'Outra', name: 'Hacker', email: 'h@x.com', password: 'cordafina-71' })).status === 409, 'setup não roda 2x');
 
 // aluno branca 4 graus, faixa há 13 meses → candidato a azul
 const s1 = (await call('POST', '/api/students', { name: 'Ana Souza', birth_date: '1998-03-02', start_date: ago(400), belt: 'branca', degrees: 4, belt_since: ago(400), degree_since: ago(100) })).body.student;

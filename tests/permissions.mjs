@@ -21,7 +21,7 @@ const ok = (c, m) => { if (c) console.log('ok ', m); else { fails++; console.log
 
 // ---------- cenário ----------
 const setupCode = generateCode(); DB.raw.exec(buildSetupSql(setupCode));
-const admin = (await call('', 'POST', '/api/setup', { academy_name: 'Academia Matriz', name: 'Admin', email: 'admin@x.com', password: 'senhaforte1', setup_code: setupCode })).cookie;
+const admin = (await call('', 'POST', '/api/setup', { academy_name: 'Academia Matriz', name: 'Admin', email: 'admin@x.com', password: 'cordafina-71', setup_code: setupCode })).cookie;
 await call(admin, 'POST', '/api/staff', { name: 'Professor', email: 'prof@x.com', password: 'senhaprof1', role: 'professor' });
 await call(admin, 'POST', '/api/staff', { name: 'Professora Dois', email: 'prof2@x.com', password: 'senhaprof2', role: 'professor' });
 const prof = (await call('', 'POST', '/api/login', { email: 'prof@x.com', password: 'senhaprof1' })).cookie;
@@ -44,7 +44,7 @@ const tech = (await call(admin, 'POST', '/api/techniques', { name: 'Técnica da 
 const T = [
   ['GET', '/api/health', null, ['ok', 'ok', 'ok']],
   ['GET', '/api/status', null, ['ok', 'ok', 'ok']],
-  ['POST', '/api/setup', { academy_name: 'X', name: 'Y', email: 'z@x.com', password: 'senhaforte1', setup_code: setupCode }, [409, 409, 409]],
+  ['POST', '/api/setup', { academy_name: 'X', name: 'Y', email: 'z@x.com', password: 'cordafina-71', setup_code: setupCode }, [409, 409, 409]],
   ['POST', '/api/login', { email: 'nao@x.com', password: 'senhaerrada' }, [401, 401, 401]],
   ['POST', '/api/reset', { email: 'nao@x.com', code: 'AAAAA-AAAAA-AAAAA-AAAAA-AAAAA-A', password: 'senhanova123' }, [400, 400, 400]],
   ['POST', '/api/logout', null, ['ok', 'skip', 'skip']],
@@ -77,7 +77,7 @@ const T = [
   ['DELETE', `/api/techniques/${tech.id}`, null, [401, 403, 'skip']],
   ['PUT', '/api/rules', { rules: [{ belt: 'branca', degree_months: 3, degree_classes: 24, belt_months: 12, belt_classes: 120, curriculum_pct: 70, next_min_age: 16 }] }, [401, 403, 'ok']],
   ['PUT', '/api/settings', { academy_name: 'Academia Matriz' }, [401, 403, 'ok']],
-  ['POST', '/api/staff', { name: 'Mais Um', email: 'm@x.com', password: 'senhaforte1' }, [401, 403, 'ok']],
+  ['POST', '/api/staff', { name: 'Mais Um', email: 'm@x.com', password: 'cordafina-71' }, [401, 403, 'ok']],
   ['PUT', `/api/staff/${staffId}`, { name: 'Professora Dois' }, [401, 403, 'ok']],
   ['GET', '/api/export/alunos.csv', null, [401, 403, 'ok']],
   ['GET', '/api/nao-existe', null, [401, 404, 404]]

@@ -21,7 +21,7 @@ const ago = d => new Date(Date.parse(today) - d * 864e5).toISOString().slice(0, 
 const dump = () => JSON.stringify(['staff', 'students', 'classes', 'lessons', 'attendance', 'lesson_techniques', 'skills', 'skill_history', 'promotions', 'techniques', 'rules', 'settings'].map(t => DB.raw.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all()));
 
 const code = generateCode(); DB.raw.exec(buildSetupSql(code));
-const admin = (await call('', 'POST', '/api/setup', { academy_name: 'Academia', name: 'Admin', email: 'a@x.test', password: 'senhaforte1', setup_code: code })).cookie;
+const admin = (await call('', 'POST', '/api/setup', { academy_name: 'Academia', name: 'Admin', email: 'a@x.test', password: 'cordafina-71', setup_code: code })).cookie;
 await call(admin, 'POST', '/api/staff', { name: 'Prof Um', email: 'p@x.test', password: 'senhaprof1', role: 'professor' });
 const prof = (await call('', 'POST', '/api/login', { email: 'p@x.test', password: 'senhaprof1' })).cookie;
 const PROF = DB.raw.prepare("SELECT id FROM staff WHERE email = 'p@x.test'").get().id;
@@ -71,7 +71,7 @@ for (const [raw, label] of [['{"name":', 'JSON malformado'], ['null', 'corpo nul
 
 // ---------- campos administrativos e autoria ----------
 await refused(prof, 'PUT', `/api/students/${stu}`, { name: 'Aluno Base', belt_since: ago(5) }, 'professor tenta corrigir data de faixa (campo de admin)', { expect: 403 });
-await refused(prof, 'POST', '/api/staff', { name: 'Novo Admin', email: 'n@x.test', password: 'senhaforte9', role: 'admin' }, 'professor tenta criar administrador', { expect: 403 });
+await refused(prof, 'POST', '/api/staff', { name: 'Novo Admin', email: 'n@x.test', password: 'cordafina-79', role: 'admin' }, 'professor tenta criar administrador', { expect: 403 });
 await refused(prof, 'PUT', '/api/staff/' + PROF, { name: 'Prof Um', role: 'admin' }, 'professor tenta se promover a administrador', { expect: 403 });
 await refused(prof, 'PUT', '/api/staff/' + PROF, { name: 'Prof Um', active: 1, id: GHOST }, 'professor tenta mexer em active/id da própria conta', { expect: 403 });
 { const r = await call(admin, 'POST', '/api/students', { name: 'Aluno Extra', start_date: ago(10), id: GHOST, created_at: '2000-01-01', updated_at: '2000-01-01', role: 'admin', is_admin: true, academy_id: 'outra' });
@@ -95,9 +95,9 @@ const routes = [
   ['POST', '/api/techniques', { name: 'Técnica V', category: 'Guarda', min_belt: 'branca', difficulty: 2, description: 'd', active: true }],
   ['PUT', '/api/rules', { rules: [{ belt: 'azul', degree_months: 4, degree_classes: 0, belt_months: 24, belt_classes: 200, curriculum_pct: 50, next_min_age: 16 }] }],
   ['PUT', '/api/settings', { academy_name: 'Academia' }],
-  ['POST', '/api/staff', { name: 'Pessoa V', email: 'pv@x.test', password: 'senhaforte1', role: 'professor', belt: 'azul' }],
+  ['POST', '/api/staff', { name: 'Pessoa V', email: 'pv@x.test', password: 'cordafina-71', role: 'professor', belt: 'azul' }],
   ['PUT', `/api/staff/${PROF}`, { name: 'Prof Um', role: 'professor', active: true, belt: 'azul' }],
-  ['PUT', '/api/me/password', { current: 'senhaforte1', password: 'senhaforte1' }]
+  ['PUT', '/api/me/password', { current: 'cordafina-71', password: 'cordafina-71' }]
 ];
 let tried = 0, five = [];
 for (const [method, path, good] of routes) for (const field of Object.keys(good)) for (const v of BAD) {

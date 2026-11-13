@@ -29,7 +29,7 @@ const client = DB => {
     return { status: r.status, body: json, cookie: (r.headers.get('set-cookie') || '').split(';')[0] };
   };
 };
-const form = (code, extra = {}) => ({ academy_name: 'Academia Nova', name: 'Responsável', email: 'dono@x.test', password: 'senhaforte1', setup_code: code, ...extra });
+const form = (code, extra = {}) => ({ academy_name: 'Academia Nova', name: 'Responsável', email: 'dono@x.test', password: 'cordafina-71', setup_code: code, ...extra });
 const count = (DB, sql) => DB.raw.prepare(sql).get().n;
 const staffN = DB => count(DB, 'SELECT count(*) n FROM staff');
 const tokenN = DB => count(DB, "SELECT count(*) n FROM settings WHERE key IN ('setup_token', 'setup_token_hash', 'setup_token_expires')");
@@ -76,7 +76,7 @@ try {
     ok(/^[A-Za-z0-9+/]{43}=$/.test(s[0].pass_hash) && s[0].pass_hash !== 'x' && /^[A-Za-z0-9+/]{22}==$/.test(s[0].pass_salt), 'senha guardada como hoje (PBKDF2, hash e sal em base64)');
     ok(tokenN(DB) === 0 && DB.raw.prepare("SELECT value FROM settings WHERE key = 'setup_done'").get().value === '1' && DB.raw.prepare("SELECT value FROM settings WHERE key = 'academy_name'").get().value === 'Academia Nova', 'código consumido (hash e validade apagados), setup_done = 1, nome da academia gravado');
     ok((await call('GET', '/api/me', undefined, { cookie: r.cookie })).body?.me?.role === 'admin', 'a sessão do setup funciona');
-    const login = await call('POST', '/api/login', { email: 'dono@x.test', password: 'senhaforte1' });
+    const login = await call('POST', '/api/login', { email: 'dono@x.test', password: 'cordafina-71' });
     ok(login.status === 200 && (await call('GET', '/api/state', undefined, { cookie: login.cookie })).status === 200, 'login e uso normal funcionam depois do setup');
     ok((await call('POST', '/api/staff', { name: 'Professor', email: 'p@x.test', password: 'senhaprof1', role: 'professor' }, { cookie: login.cookie })).status === 201, 'instalação operacional: administrador cadastra a equipe normalmente');
     const st = await call('GET', '/api/status');

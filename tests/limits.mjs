@@ -25,7 +25,7 @@ const n = sql => DB.raw.prepare(sql).get().n;
 const measure = async (...a) => { q = 0; batches = 0; const r = await call(...a); return { ...r, q, batches }; };
 
 const code = generateCode(); DB.raw.exec(buildSetupSql(code));
-const setup = await W.fetch(new Request('https://t.test/api/setup', { method: 'POST', headers: { 'content-type': 'application/json', 'x-tatame': '1' }, body: JSON.stringify({ academy_name: 'Academia', name: 'Admin', email: 'a@x.test', password: 'senhaforte1', setup_code: code }) }), env);
+const setup = await W.fetch(new Request('https://t.test/api/setup', { method: 'POST', headers: { 'content-type': 'application/json', 'x-tatame': '1' }, body: JSON.stringify({ academy_name: 'Academia', name: 'Admin', email: 'a@x.test', password: 'cordafina-71', setup_code: code }) }), env);
 const admin = setup.headers.get('set-cookie').split(';')[0];
 for (let i = 0; i < 301; i++) DB.raw.prepare('INSERT INTO students (id, name, start_date, belt_since, degree_since) VALUES (?, ?, ?, ?, ?)').run(crypto.randomUUID(), 'Aluno ' + i, ago(100), ago(100), ago(100));
 const S = DB.raw.prepare('SELECT id FROM students ORDER BY rowid').all().map(r => r.id);

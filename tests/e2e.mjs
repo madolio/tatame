@@ -31,6 +31,8 @@ await ctx.route('**/*', async route => {
   const headers = await req.allHeaders();
   const r = await W.fetch(new Request(req.url(), { method: req.method(), headers, body: ['GET', 'HEAD'].includes(req.method()) ? undefined : req.postDataBuffer() }), env);
   const h = {}; r.headers.forEach((v, k) => { h[k] = v; });
+  // Vários Set-Cookie (sessão + aparelho conhecido): o forEach os junta com vírgula; o Playwright quer um por linha.
+  const sc = r.headers.getSetCookie(); if (sc.length) h['set-cookie'] = sc.join('\n');
   await route.fulfill({ status: r.status, headers: h, body: Buffer.from(await r.arrayBuffer()) });
 });
 const page = await ctx.newPage();
@@ -45,8 +47,8 @@ await step('configuração inicial', async () => {
   await page.goto('https://tatame.test/');
   await page.waitForSelector('text=Primeiro acesso');
   await page.fill('[name=setup_code]', SETUP.toLowerCase()); await page.fill('[name=academy_name]', 'Academia Exemplo BJJ'); await page.fill('[name=name]', 'Prof. Carlos'); await page.fill('[name=email]', 'carlos@exemplo.com'); await page.fill('[name=password]', 'curta');
-  await page.click('button[type=submit]'); await page.waitForSelector('text=pelo menos 8 caracteres');
-  await page.fill('[name=password]', 'tatame2026');
+  await page.click('button[type=submit]'); await page.waitForSelector('text=pelo menos 10 caracteres');
+  await page.fill('[name=password]', 'kimono-azul-26');
   await page.click('button[type=submit]');
   await page.waitForSelector('#main h1:has-text("Academia Exemplo BJJ")');
   await page.waitForSelector('text=Nenhum horário fixo hoje');
@@ -191,6 +193,11 @@ await step('professor sem permissão de admin e logout', async () => {
   await page.waitForSelector('text=E-mail ou senha incorretos');
   await page.fill('[name=password]', 'rafael2026'); await page.click('button[type=submit]');
   await page.waitForSelector('#main h1:has-text("Academia Exemplo BJJ")');
+  // O navegador guardou o cookie de aparelho conhecido com o escopo e os atributos esperados (e a sessão continua separada).
+  const cks = await ctx.cookies('https://tatame.test/api/login');
+  const dev = cks.find(c => c.name.startsWith('tatame_dev_'));
+  assert.ok(dev && dev.path === '/api/login' && dev.httpOnly && dev.secure && dev.sameSite === 'Strict' && dev.expires * 1000 > Date.now() + 89 * 864e5, 'cookie de aparelho conhecido no navegador');
+  assert.ok(!(await ctx.cookies('https://tatame.test/api/state')).some(c => c.name.startsWith('tatame_dev_')), 'cookie de aparelho não vai para outras rotas');
   await page.click('.nav a[data-tab=ajustes]'); await page.waitForSelector('text=só o administrador edita');
   assert.equal(await page.locator('#acad').count(), 0);
   assert.ok(await page.locator('[name="branca.degree_months"]').isDisabled());

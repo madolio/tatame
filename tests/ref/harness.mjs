@@ -32,7 +32,7 @@ export async function openWorld(today) {
     return { status: r.status, body: await r.json().catch(() => null) };
   };
   const setupCode = generateCode(); DB.raw.exec(buildSetupSql(setupCode));
-  const setup = await api('POST', '/api/setup', { academy_name: 'Academia Paridade', name: 'Admin', email: 'admin@paridade.test', password: 'senhaforte1', setup_code: setupCode });
+  const setup = await api('POST', '/api/setup', { academy_name: 'Academia Paridade', name: 'Admin', email: 'admin@paridade.test', password: 'cordafina-71', setup_code: setupCode });
   if (setup.status !== 201) throw new Error('setup falhou: ' + JSON.stringify(setup.body));
   DB.raw.prepare("UPDATE auth_sessions SET expires_at = '2999-01-01T00:00:00.000Z', created_at = ?").run(today + 'T00:00:00.000Z');
   freezeClock(today);

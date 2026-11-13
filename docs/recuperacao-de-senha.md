@@ -24,7 +24,7 @@ O código vale **30 minutos**, serve **uma vez** e é invalidado se um novo for 
 ## Passo a passo do administrador
 
 1. Na tela de login, toque em **Tenho um código de recuperação**.
-2. Informe o e-mail da conta, o código recebido, a nova senha (mínimo 8 caracteres) e repita a senha.
+2. Informe o e-mail da conta, o código recebido, a nova senha (mínimo 10 caracteres; senhas muito comuns, iguais ao e-mail ou de um caractere repetido são recusadas) e repita a senha.
 3. Ao ver "Senha redefinida", entre com a nova senha. Todos os aparelhos que estavam conectados nessa conta são desconectados.
 
 Mensagens possíveis: *código inválido* (também aparece para e-mail errado, de propósito), *código expirado*, *código já utilizado*, *muitas tentativas*. Em qualquer uma, peça um código novo.

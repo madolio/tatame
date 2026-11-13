@@ -137,7 +137,7 @@ function renderLogin(msg = '', setup = false) {
         <label class="field"><span>Nome da academia</span><input class="input" name="academy_name" maxlength="80" required autofocus></label>
         <label class="field"><span>Seu nome</span><input class="input" name="name" autocomplete="name" maxlength="80" required></label>` : ''}
       <label class="field"><span>E-mail</span><input class="input" name="email" type="email" autocomplete="email" required ${setup ? '' : 'autofocus'}></label>
-      <label class="field"><span>Senha</span><input class="input" name="password" type="password" autocomplete="${setup ? 'new-password' : 'current-password'}" minlength="8" required></label>
+      <label class="field"><span>Senha</span><input class="input" name="password" type="password" autocomplete="${setup ? 'new-password' : 'current-password'}" minlength="${setup ? 10 : 8}" required></label>
       <div class="err" id="auth-err" role="alert">${esc(msg)}</div>
       <button class="btn block" type="submit">${setup ? 'Criar academia' : 'Entrar'}</button>
     </form>
@@ -150,7 +150,8 @@ function renderLogin(msg = '', setup = false) {
     if (setup && String(b.academy_name).trim().length < 2) return err.textContent = 'Informe o nome da academia.';
     if (setup && String(b.name).trim().length < 2) return err.textContent = 'Informe seu nome.';
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(b.email).trim())) return err.textContent = 'Informe um e-mail válido.';
-    if (String(b.password).length < 8) return err.textContent = 'A senha precisa ter pelo menos 8 caracteres.';
+    // Login: senhas antigas (8–9) continuam valendo. Senha nova (setup): política atual, conferida de verdade no servidor.
+    if (String(b.password).length < (setup ? 10 : 8)) return err.textContent = `A senha precisa ter pelo menos ${setup ? 10 : 8} caracteres.`;
     const btn = e.target.querySelector('button'); btn.classList.add('loading');
     try {
       await api('POST', setup ? '/api/setup' : '/api/login', b);
@@ -168,8 +169,8 @@ function renderReset(msg = '') {
       <p class="muted small" style="margin:0 0 4px">Digite o e-mail da conta, o código que você recebeu e escolha uma nova senha. O código vale por 30 minutos e só pode ser usado uma vez.</p>
       <label class="field"><span>E-mail</span><input class="input" name="email" type="email" autocomplete="email" required autofocus></label>
       <label class="field"><span>Código de recuperação</span><input class="input" name="code" autocomplete="off" autocapitalize="characters" spellcheck="false" required style="text-transform:uppercase;letter-spacing:.08em"></label>
-      <label class="field"><span>Nova senha</span><input class="input" name="password" type="password" autocomplete="new-password" minlength="8" required></label>
-      <label class="field"><span>Repita a nova senha</span><input class="input" name="password_confirm" type="password" autocomplete="new-password" minlength="8" required></label>
+      <label class="field"><span>Nova senha</span><input class="input" name="password" type="password" autocomplete="new-password" minlength="10" required></label>
+      <label class="field"><span>Repita a nova senha</span><input class="input" name="password_confirm" type="password" autocomplete="new-password" minlength="10" required></label>
       <div class="err" id="reset-err" role="alert">${esc(msg)}</div>
       <button class="btn block" type="submit">Redefinir senha</button>
     </form>
@@ -181,7 +182,7 @@ function renderReset(msg = '') {
     const b = formObj(e.target), err = $('#reset-err'); err.textContent = '';
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(b.email).trim())) return err.textContent = 'Informe um e-mail válido.';
     if (!String(b.code).trim()) return err.textContent = 'Informe o código de recuperação.';
-    if (String(b.password).length < 8) return err.textContent = 'A senha precisa ter pelo menos 8 caracteres.';
+    if (String(b.password).length < 10) return err.textContent = 'A senha precisa ter pelo menos 10 caracteres.';
     if (b.password !== b.password_confirm) return err.textContent = 'As senhas não conferem.';
     const btn = e.target.querySelector('button'); btn.classList.add('loading');
     try {
@@ -776,7 +777,7 @@ VIEWS.ajustes = () => {
       <div class="list">${S.staff.map(p => `<button class="item" data-act="staff-edit" data-id="${p.id}" style="${p.active ? '' : 'opacity:.5'}"><div class="avatar">${esc(initials(p.name))}</div><div class="grow"><b class="small">${esc(p.name)}</b><div class="muted xs">${esc(p.email || '')} · ${p.role === 'admin' ? 'Administrador' : 'Professor'}${p.active ? '' : ' · sem acesso'}</div></div>${p.belt ? belt(p.belt) : ''}</button>`).join('')}</div>` : ''}
     <div class="section-title"><h2>Minha conta</h2></div>
     <form id="pw" class="card form-grid" novalidate><label class="field"><span>Senha atual</span><input class="input" type="password" name="current" autocomplete="current-password"></label>
-      <label class="field"><span>Nova senha</span><input class="input" type="password" name="password" autocomplete="new-password" minlength="8"></label><button class="btn ghost full">Trocar senha</button></form>
+      <label class="field"><span>Nova senha</span><input class="input" type="password" name="password" autocomplete="new-password" minlength="10"></label><button class="btn ghost full">Trocar senha</button></form>
     <div class="row">${adm ? `<a class="btn ghost grow" href="/api/export/alunos.csv" download>${I('download', 16)} Exportar alunos (CSV)</a>` : ''}<button class="btn ghost grow" data-act="logout">${I('logout', 16)} Sair</button></div>`,
     after() {
       if (adm) {
@@ -790,7 +791,7 @@ VIEWS.ajustes = () => {
       }
       $('#pw').onsubmit = async e => {
         e.preventDefault(); const b = formObj(e.target);
-        if (String(b.password).length < 8) return toast('A nova senha precisa ter pelo menos 8 caracteres.', 'error');
+        if (String(b.password).length < 10) return toast('A nova senha precisa ter pelo menos 10 caracteres.', 'error');
         if (await busy(e.target.querySelector('button'), () => api('PUT', '/api/me/password', b), 'Senha alterada.')) e.target.reset();
       };
     }
@@ -810,7 +811,7 @@ function openStaff(id) {
   $('#sf', w).onsubmit = async e => {
     e.preventDefault();
     const b = formObj(e.target); if (id) b.active = !!e.target.active.checked; if (!b.password) delete b.password;
-    if (!id && String(b.password || '').length < 8) return $('#sf-err', w).textContent = 'Defina uma senha inicial com pelo menos 8 caracteres.';
+    if (!id && String(b.password || '').length < 10) return $('#sf-err', w).textContent = 'Defina uma senha inicial com pelo menos 10 caracteres.';
     const r = await busy(e.target.querySelector('button'), () => id ? api('PUT', '/api/staff/' + id, b) : api('POST', '/api/staff', b), 'Acesso salvo.');
     if (!r) return; closeSheet(); await refresh(); render();
   };
