@@ -27,6 +27,7 @@ const SKILL_LABELS = ['Não visto', 'Visto em aula', 'Executa com ajuda', 'Execu
 //   RULES_MAX    uma regra por faixa (9 faixas), sem repetir faixa.
 // As listas vão ao banco como UM parâmetro JSON (json_each): o número de comandos e de parâmetros não cresce com a lista
 // (o D1 limita parâmetros por consulta; IN (?, ?, …) com 300 itens passaria desse limite).
+const AGENDA_MAX_DAYS = 42, AGENDA_AHEAD_DAYS = 366;   // Agenda V1: período máximo de uma consulta e até onde se pode programar uma aula
 const BODY_MAX = 256 * 1024, LESSON_STUDENTS_MAX = 300, LESSON_TECHS_MAX = 40, SKILLS_MAX = 100, RULES_MAX = 9;
 
 const SECURITY_HEADERS = {
@@ -525,7 +526,8 @@ async function computeAll(db) {
 async function dashboard(db, C) {
   const { core, today, students } = C;
   const active = students.filter(s => s.status === 'ativo');
-  const lessons = await all(db, `SELECT l.*, (SELECT count(*) FROM attendance a WHERE a.lesson_id = l.id) n FROM lessons l WHERE l.date > ? ORDER BY l.date`, addDays(today, -7 * 13));
+  // Só aulas até hoje: uma aula programada para o futuro (Agenda V1) ainda não aconteceu e não entra nas médias nem nos totais.
+  const lessons = await all(db, `SELECT l.*, (SELECT count(*) FROM attendance a WHERE a.lesson_id = l.id) n FROM lessons l WHERE l.date > ? AND l.date <= ? ORDER BY l.date`, addDays(today, -7 * 13), today);
   const ws = weekStart(today);
   const weeks = [...Array(12)].map((_, i) => addDays(ws, -7 * (11 - i)));
   const weekly = weeks.map(w => {
@@ -676,7 +678,8 @@ async function saveLesson(db, staff, b, id) {
   if (classIn && !cls) bad('Turma não encontrada.');
   const o = {
     class_id: cls ? cls.id : null,
-    date: date(b.date, 'Data da aula', true),
+    // Agenda V1: a aula pode ser programada para uma data futura (sem chamada). Limite de um ano à frente.
+    date: date(b.date, 'Data da aula', true, { future: true }),
     start_time: b.start_time || (cls && cls.start_time), end_time: b.end_time || (cls && cls.end_time),
     modality: oneOf(b.modality, ['gi', 'nogi', 'livre'], 'Modalidade', cls ? cls.modality : 'gi'),
     title: str(b.title, { max: 120, field: 'Tema da aula' }),
@@ -695,15 +698,27 @@ async function saveLesson(db, staff, b, id) {
     if (f.t !== techIds.length) bad('Alguma técnica não existe.');
   }
   if (instructorIn && !(await first(db, 'SELECT id FROM staff WHERE id = ?', instructorIn))) bad('Instrutor não encontrado.');
+  if (o.date > addDays(todayStr(), AGENDA_AHEAD_DAYS)) bad('A data da aula está longe demais no futuro.');
   if (o.class_id) {
     const dup = await first(db, 'SELECT id FROM lessons WHERE class_id = ? AND date = ? AND id <> ?', o.class_id, o.date, id || '');
     if (dup) throw new HttpError(409, 'Já existe uma chamada desta turma neste dia.');
+  }
+  // Agenda V1: o mesmo professor não dá duas aulas ao mesmo tempo. Aula nova: vale quando o professor foi escolhido (ou veio da turma).
+  // Aula editada: vale quando data, horário ou professor mudaram (corrigir a chamada de uma aula antiga nunca é bloqueado por um conflito
+  // que já existia). Quando ninguém foi escolhido o responsável é quem registrou, o que não é uma escala de trabalho e não conflita.
+  const deliberate = !!(instructorIn || (cls && cls.instructor_id));
+  const moved = !!before && (before.date !== o.date || before.start_time !== o.start_time || before.end_time !== o.end_time || before.instructor_id !== o.instructor_id);
+  if (o.instructor_id && (before ? moved : deliberate)) {
+    const clash = await first(db, 'SELECT start_time, end_time FROM lessons WHERE instructor_id = ? AND date = ? AND id <> ? AND start_time < ? AND end_time > ? ORDER BY start_time LIMIT 1', o.instructor_id, o.date, id || '', o.end_time, o.start_time);
+    if (clash) throw new HttpError(409, `O professor já tem aula neste dia, das ${clash.start_time} às ${clash.end_time}.`);
   }
   // D6: marcador de chamada. Com presentes a chamada foi feita. Sem presentes: o valor informado (true = chamada feita, ninguém veio;
   // false = sem chamada); se não informado, aula nova começa "sem chamada" (0) e aula existente mantém o estado (inclusive desconhecido, NULL).
   const rollIn = b.roll_called === undefined || b.roll_called === null ? null : typeof b.roll_called === 'boolean' ? (b.roll_called ? 1 : 0) : bad('Chamada inválida.');
   if (rollIn === 0 && studentIds.length) bad('Há alunos presentes: a chamada não pode ser marcada como não realizada.');
   const roll = studentIds.length ? 1 : rollIn !== null ? rollIn : id ? before.roll_called : 0;
+  // Presença é um fato que já aconteceu: aula futura não aceita chamada.
+  if (o.date > todayStr() && (studentIds.length || roll === 1)) bad('Aula futura não pode ter chamada.');
   const stmts = [];
   if (id) {
     stmts.push(db.prepare('UPDATE lessons SET class_id=?, date=?, start_time=?, end_time=?, modality=?, title=?, notes=?, instructor_id=?, roll_called=? WHERE id=?')
@@ -730,6 +745,41 @@ async function saveLesson(db, staff, b, id) {
       ON CONFLICT (student_id, technique_id) DO UPDATE SET level = 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), updated_by = excluded.updated_by WHERE skills.level < 1`).bind(staff.id, sJson, tJson));
   await db.batch(stmts);
   return id;
+}
+
+// Agenda V1: aulas de um período. Mistura as aulas gravadas (lessons) com as ocorrências previstas pelos horários fixos (classes)
+// que ainda não têm aula gravada. A recorrência semanal é a própria grade: nada é gerado nem gravado em massa.
+async function agenda(db, from, to) {
+  const today = todayStr();
+  const [classes, lessons, regs] = await Promise.all([
+    all(db, 'SELECT c.*, s.name instructor_name FROM classes c LEFT JOIN staff s ON s.id = c.instructor_id WHERE c.active = 1'),
+    all(db, `SELECT l.id, l.class_id, l.date, l.start_time, l.end_time, l.modality, l.title, l.instructor_id, l.created_by, l.created_at, l.roll_called,
+      c.name class_name, c.level class_level, s.name instructor_name, (SELECT count(*) FROM attendance a WHERE a.lesson_id = l.id) attendees
+      FROM lessons l LEFT JOIN classes c ON c.id = l.class_id LEFT JOIN staff s ON s.id = l.instructor_id WHERE l.date BETWEEN ? AND ? ORDER BY l.date, l.start_time LIMIT 1000`, from, to),
+    // "Costumam vir": alunos ativos com 2 ou mais presenças na turma nas últimas 8 semanas (para a chamada começar pelos prováveis).
+    all(db, `SELECT l.class_id, a.student_id, count(*) n FROM attendance a JOIN lessons l ON l.id = a.lesson_id JOIN students st ON st.id = a.student_id
+      WHERE l.class_id IS NOT NULL AND l.date > ? AND st.status = 'ativo' GROUP BY l.class_id, a.student_id HAVING count(*) >= 2 ORDER BY l.class_id, n DESC, a.student_id`, addDays(today, -56))
+  ]);
+  const items = lessons.map(l => ({ kind: 'lesson', ...l, name: l.class_name || l.title || 'Aula avulsa', class_name: undefined }));
+  const have = new Set(lessons.filter(l => l.class_id).map(l => l.class_id + '|' + l.date));
+  for (let d = from; d <= to; d = addDays(d, 1)) {
+    const wd = new Date(d + 'T00:00:00Z').getUTCDay();
+    for (const c of classes) {
+      // Só a partir do dia em que a turma foi cadastrada: a grade de hoje não reescreve o passado.
+      if (c.weekday !== wd || have.has(c.id + '|' + d) || String(c.created_at).slice(0, 10) > d) continue;
+      items.push({ kind: 'planned', class_id: c.id, date: d, start_time: c.start_time, end_time: c.end_time, modality: c.modality, level: c.level,
+        instructor_id: c.instructor_id, instructor_name: c.instructor_name, name: c.name });
+    }
+  }
+  items.sort((a, b) => a.date.localeCompare(b.date) || a.start_time.localeCompare(b.start_time) || a.end_time.localeCompare(b.end_time));
+  // Conflito: o mesmo professor em duas aulas que se sobrepõem no mesmo dia.
+  const byDay = new Map();
+  for (const it of items) if (it.instructor_id) { const k = it.date + '|' + it.instructor_id; if (!byDay.has(k)) byDay.set(k, []); byDay.get(k).push(it); }
+  for (const arr of byDay.values()) for (let i = 0; i < arr.length; i++) for (let j = i + 1; j < arr.length; j++)
+    if (arr[i].start_time < arr[j].end_time && arr[j].start_time < arr[i].end_time) arr[i].conflict = arr[j].conflict = true;
+  const regulars = {};
+  for (const r of regs) { const a = regulars[r.class_id] || (regulars[r.class_id] = []); if (a.length < 40) a.push(r.student_id); }
+  return { from, to, today, items, regulars };
 }
 
 async function lessonOut(db, id) {
@@ -1165,6 +1215,13 @@ async function route(req, env, url, ctx) {
   }
 
   // ---------- aulas e chamada ----------
+  // Agenda V1 (leitura): qualquer pessoa da equipe logada, como a lista de aulas.
+  if (path === '/api/agenda' && method === 'GET') {
+    const from = url.searchParams.get('from'), to = url.searchParams.get('to');
+    if (!isDate(from) || !isDate(to) || to < from) bad('Período inválido.');
+    if (dnum(to) - dnum(from) >= AGENDA_MAX_DAYS) bad(`A agenda mostra no máximo ${AGENDA_MAX_DAYS} dias por vez.`);
+    return json(await agenda(db, from, to));
+  }
   if (path === '/api/lessons' && method === 'GET') {
     const from = url.searchParams.get('from') || addDays(todayStr(), -60), to = url.searchParams.get('to') || todayStr();
     if (!isDate(from) || !isDate(to)) bad('Período inválido.');

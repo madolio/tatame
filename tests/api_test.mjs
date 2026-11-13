@@ -304,4 +304,7 @@ ok(csvBefore.split('\r\n').slice(0, 2).every(l => csv.body.includes(l)), 'CSV se
   ok(!RC.buildSql(A, c4).includes(c4.replace(/-/g, '')) && !RC.buildSql(A, c4).includes(c4), 'script: o SQL gerado não contém o código');
 }
 
+// Agenda V1: roda junto da suíte da API (package.json não é alterado nesta branch; ver docs/agenda.md).
+await import('./agenda.mjs');
+
 console.log('\nTODOS OS TESTES DA API PASSARAM');
