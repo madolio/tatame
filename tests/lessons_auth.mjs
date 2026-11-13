@@ -36,9 +36,13 @@ const tech = DB.raw.prepare('SELECT id FROM techniques LIMIT 1').get().id;
 const lesson = async (ck, days) => (await call(ck, 'POST', '/api/lessons', { date: ago(days), start_time: '19:00', end_time: '20:00', student_ids: [a, b], technique_ids: [tech], title: 'Original' })).body.id;
 const edit = (ck, lid, extra = {}) => call(ck, 'PUT', '/api/lessons/' + lid, { date: ago(1), start_time: '19:00', end_time: '20:00', student_ids: [a], technique_ids: [], title: 'Editada', ...extra });
 const denied = async (ck, lid, payload, label) => {
-  const s0 = state(lid), n0 = DB.raw.prepare('SELECT count(*) n FROM audit_log').get().n;
+  // 6.4-C (V6): a negação passa a deixar um action_denied (no máximo um por ator e ação a cada 15 min); nenhum outro evento.
+  const others = () => DB.raw.prepare("SELECT count(*) n FROM audit_log WHERE event <> 'action_denied'").get().n;
+  const s0 = state(lid), n0 = others();
   const r = await edit(ck, lid, payload);
-  ok(r.status === 403 && state(lid) === s0 && DB.raw.prepare('SELECT count(*) n FROM audit_log').get().n === n0, `${label}: 403, chamada idêntica no banco e nada auditado`);
+  const den = DB.raw.prepare("SELECT * FROM audit_log WHERE event = 'action_denied' ORDER BY id DESC").get();
+  ok(r.status === 403 && state(lid) === s0 && others() === n0 && den && den.outcome === 'denied' && JSON.parse(den.detail).acao === 'lesson_update' && JSON.parse(den.detail).motivo === 'autoria_ou_prazo',
+    `${label}: 403, chamada idêntica no banco, nenhuma alteração auditada como feita (só a negação, action_denied)`);
 };
 
 // ---------- professor ----------

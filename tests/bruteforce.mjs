@@ -158,7 +158,8 @@ const LOCK = 'Muitas tentativas. Aguarde 15 minutos e tente de novo.';
   const rows = w.DB.raw.prepare("SELECT * FROM audit_log WHERE event IN ('login_ok', 'login_locked')").all();
   const okRow = rows.find(x => x.event === 'login_ok'), d = JSON.parse(okRow.detail);
   ok(okRow.staff_id === id && d.rede === '198.51.100.9' && d.aparelho_conhecido === false, 'login_ok: quem, de qual rede e se era aparelho conhecido');
-  ok(w.n("SELECT count(*) n FROM audit_log WHERE event NOT IN ('login_ok', 'login_locked')") === 0 && rows.length === 2, 'nenhuma linha por senha errada: 20 erros geraram só 1 login_locked');
+  // setup_completed (6.4-C) é a instalação feita pelo boot, não uma tentativa de login.
+  ok(w.n("SELECT count(*) n FROM audit_log WHERE event NOT IN ('login_ok', 'login_locked', 'setup_completed')") === 0 && w.n("SELECT count(*) n FROM audit_log WHERE event = 'setup_completed'") === 1 && rows.length === 2, 'nenhuma linha por senha errada: 20 erros geraram só 1 login_locked');
   const all = JSON.stringify(w.DB.raw.prepare('SELECT * FROM audit_log').all());
   const ph = w.DB.raw.prepare('SELECT pass_hash, pass_salt FROM staff WHERE id = ?').get(id);
   ok(!all.includes('cordafina') && !all.includes('chute-secreto') && !all.includes(ph.pass_hash) && !all.includes(ph.pass_salt) && !all.includes(r.device.split('=')[1]) && !all.includes(r.session.split('=')[1]) && !/tatame_dev_|tatame_sid/.test(all), 'auditoria sem senha, hash, sal, cookie de aparelho ou de sessão'); }

@@ -422,7 +422,7 @@ wrangler/D1 que só o ensaio confirma) está em **`docs/validacao-d1.md`**. Resu
 - O wrapper não imprime valores das linhas; os relatórios mostram só contagens, nomes de tabelas e impressões digitais.
 - O manifesto não contém valores das linhas, tokens ou credenciais.
 - Eventos de infraestrutura (migração, backup, restauração) **não** vão para o `audit_log` (que é de negócio). A
-  auditoria ampliada (migração 003) fica para depois da Etapa 6.
+  auditoria das ações administrativas (colunas da migração 003, Etapa 6.4-C) está descrita em `docs/auditoria.md`.
 
 ## 12. Limitações conhecidas
 

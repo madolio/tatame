@@ -265,7 +265,122 @@ const GHOST_SALT = 'dGF0YW1lLWdob3N0LXNhbHQ=';
 // dono). Adivinhar 130 bits é inviável; quem limita tentativas são os contadores por (e-mail, rede) e por rede.
 const normalizeResetCode = c => String(c || '').toUpperCase().replace(/O/g, '0').replace(/[IL]/g, '1').replace(/[^0-9A-Z]/g, '');
 const resetCodeHash = (staffId, code) => sha256('tatame-reset:' + staffId + ':' + normalizeResetCode(code));
-const audit = (db, event, staffId, detail) => db.prepare('INSERT INTO audit_log (event, staff_id, detail) VALUES (?, ?, ?)').bind(event, staffId || null, detail || null);
+// ---------- auditoria (V6) ----------
+// Catálogo FECHADO: só entra em audit_log evento listado aqui, com alvo do tipo previsto, resultado previsto e `detail` montado
+// SÓ com as chaves listadas, cada valor conferido (ids, números, datas, listas fechadas). Nada de texto livre: nome, e-mail,
+// telefone, observações, senha, hash, token, cookie ou código não têm chave que os aceite. Violação = erro de programação
+// (exceção antes do batch: a operação não acontece), apanhado pelos testes.
+// staff_id: só os eventos anteriores à 6.4-C o preenchem, com o significado histórico de cada um (`legacy`: 'actor' = quem fez,
+// 'target' = a conta afetada). Eventos novos deixam staff_id NULL e usam só actor_id / target_type / target_id.
+const AUD_ID = v => typeof v === 'string' && UUID_RE.test(v);
+const AUD_INT = (lo, hi) => v => Number.isInteger(v) && v >= lo && v <= hi;
+const AUD_BOOL = v => typeof v === 'boolean';
+const AUD_ONE = (...vals) => v => vals.includes(v);
+const AUD_NULL = f => v => v === null || f(v);
+const AUD_LIST = (f, max) => v => Array.isArray(v) && v.length <= max && v.every(f);
+const AUD_NET = v => typeof v === 'string' && v.length <= 45 && (v === 'desconhecido' || /^[0-9a-f.:/]+$/.test(v));
+const AUD_OBJ = shape => v => !!v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).every(k => k in shape && shape[k](v[k]));
+const AUD_TXT = max => v => typeof v === 'string' && v.length <= max;
+const ROLES = ['admin', 'professor'], STATUSES = ['ativo', 'trancado', 'inativo'];
+// Retrato de aula (lesson_updated/lesson_deleted, formato anterior à 6.4-C mantido): permite reconstruir a chamada. Único caso com
+// texto de equipe (tema e observações da AULA, não do aluno). O "antes" vem do BANCO: conferido por chave e tipo/tamanho, sem
+// exigir o formato atual da API (uma aula antiga fora do formato não pode ficar impossível de corrigir ou excluir).
+const AUD_KEY = v => typeof v === 'string' && /^[\w-]{1,64}$/.test(v);
+const AUD_LESSON = AUD_OBJ({ id: AUD_KEY, class_id: AUD_NULL(AUD_KEY), date: AUD_TXT(10), start_time: AUD_TXT(5), end_time: AUD_TXT(5), modality: AUD_NULL(AUD_TXT(10)),
+  title: AUD_NULL(AUD_TXT(2000)), notes: AUD_NULL(AUD_TXT(5000)), instructor_id: AUD_NULL(AUD_KEY), created_by: AUD_NULL(AUD_KEY), created_at: AUD_NULL(AUD_TXT(30)),
+  roll_called: AUD_NULL(AUD_ONE(0, 1)), student_ids: AUD_LIST(AUD_KEY, 5000), technique_ids: AUD_LIST(AUD_INT(1, 1e9), 1000) });
+const AUD_GRAD = AUD_OBJ({ belt_since: AUD_NULL(AUD_TXT(10)), degree_since: AUD_NULL(AUD_TXT(10)), imported_classes_belt: AUD_NULL(AUD_INT(0, 1e6)), imported_classes_degree: AUD_NULL(AUD_INT(0, 1e6)) });
+const STUDENT_EDIT_FIELDS = ['name', 'nickname', 'birth_date', 'sex', 'phone', 'email', 'start_date', 'prior_months', 'weight_kg', 'goals', 'notes'];
+const CLASS_EDIT_FIELDS = ['name', 'weekday', 'start_time', 'end_time', 'level', 'modality', 'instructor_id', 'active'];
+const TECH_EDIT_FIELDS = ['name', 'category', 'min_belt', 'difficulty', 'description', 'active'];
+const DENY_ACTIONS = ['student_delete', 'student_graduation_fix', 'promotion_undo', 'lesson_update', 'lesson_delete', 'class_delete',
+  'technique_create', 'technique_update', 'technique_delete', 'rules_update', 'settings_update', 'staff_create', 'staff_update', 'students_export'];
+const TARGET_ID = { staff: AUD_ID, student: AUD_ID, lesson: AUD_ID, promotion: AUD_ID, class: AUD_ID, technique: v => typeof v === 'string' && /^\d{1,10}$/.test(v),
+  rules: v => v === null, settings: AUD_ONE('academy_name'), export: AUD_ONE('alunos.csv') };
+const PROMO = { aluno: AUD_ID, tipo: AUD_ONE('grau', 'faixa'), de_faixa: AUD_ONE(...BELTS), de_graus: AUD_INT(0, 6), para_faixa: AUD_ONE(...BELTS), para_graus: AUD_INT(0, 6) };
+//  target: tipos de alvo aceitos (null = sem alvo); outcomes: resultados aceitos; anon: aceita ator nulo; detail: allowlist;
+//  text: texto fixo do formato anterior (sem detail); max: tamanho máximo do JSON (padrão 1024 bytes).
+const AUDIT_EVENTS = {
+  // ----- anteriores à 6.4-C (mesmo event, mesmo staff_id, mesmo detail; agora também com as colunas estruturadas) -----
+  login_ok: { target: ['staff'], outcomes: ['ok'], legacy: 'actor', detail: { rede: AUD_NET, aparelho_conhecido: AUD_BOOL } },
+  login_locked: { target: ['staff', null], outcomes: ['limit'], anon: true, legacy: 'target', detail: { limites: AUD_LIST(AUD_ONE('par', 'rede', 'conta'), 3), rede: AUD_NET, conta_existe: AUD_BOOL } },
+  reset_failed: { target: ['staff', null], outcomes: ['limit'], anon: true, legacy: 'target', detail: { limites: AUD_LIST(AUD_ONE('par', 'rede'), 2), rede: AUD_NET } },
+  reset_used: { target: ['staff'], outcomes: ['ok'], legacy: 'actor', text: 'senha redefinida; sessões encerradas' },
+  password_changed: { target: ['staff'], outcomes: ['ok'], legacy: 'actor', detail: { por: AUD_ONE('propria_conta'), sessoes_encerradas: AUD_BOOL, codigos_de_recuperacao_invalidados: AUD_BOOL } },
+  password_change_failed: { target: ['staff'], outcomes: ['limit'], legacy: 'actor', detail: { tentativas: AUD_INT(0, 100), janela_min: AUD_INT(1, 1440) } },
+  staff_password_reset: { target: ['staff'], outcomes: ['ok'], legacy: 'actor', detail: { conta: AUD_ID, sessoes_encerradas: AUD_BOOL, codigos_de_recuperacao_invalidados: AUD_BOOL } },
+  lesson_updated: { target: ['lesson'], outcomes: ['ok'], legacy: 'actor', max: 400000, detail: { lesson_id: AUD_ID, before: AUD_LESSON, after: AUD_OBJ({ class_id: AUD_NULL(AUD_ID), date: isDate, start_time: isTime, end_time: isTime,
+    modality: AUD_ONE('gi', 'nogi', 'livre'), title: AUD_NULL(AUD_TXT(120)), notes: AUD_NULL(AUD_TXT(2000)), instructor_id: AUD_NULL(AUD_ID), roll_called: AUD_NULL(AUD_ONE(0, 1)),
+    student_ids: AUD_LIST(AUD_ID, LESSON_STUDENTS_MAX), technique_ids: AUD_LIST(AUD_INT(1, 1e9), LESSON_TECHS_MAX) }) } },
+  lesson_deleted: { target: ['lesson'], outcomes: ['ok'], legacy: 'actor', max: 300000, detail: { lesson_id: AUD_ID, before: AUD_LESSON } },
+  // ----- novos (6.4-C): staff_id NULL -----
+  setup_completed: { target: ['staff'], outcomes: ['ok'], detail: { papel: AUD_ONE('admin') } },
+  logout: { target: ['staff'], outcomes: ['ok'] },
+  staff_created: { target: ['staff'], outcomes: ['ok'], detail: { papel: AUD_ONE(...ROLES) } },
+  staff_updated: { target: ['staff'], outcomes: ['ok'], detail: { campos: AUD_LIST(AUD_ONE('name', 'belt'), 2) } },
+  staff_role_changed: { target: ['staff'], outcomes: ['ok'], detail: { de: AUD_ONE(...ROLES), para: AUD_ONE(...ROLES) } },
+  staff_deactivated: { target: ['staff'], outcomes: ['ok'], detail: { sessoes_encerradas: AUD_BOOL, codigos_de_recuperacao_invalidados: AUD_BOOL } },
+  staff_reactivated: { target: ['staff'], outcomes: ['ok'] },
+  student_created: { target: ['student'], outcomes: ['ok'], detail: { situacao: AUD_ONE(...STATUSES), faixa: AUD_ONE(...BELTS), graus: AUD_INT(0, 6) } },
+  student_updated: { target: ['student'], outcomes: ['ok'], detail: { campos: AUD_LIST(AUD_ONE(...STUDENT_EDIT_FIELDS), STUDENT_EDIT_FIELDS.length) } },
+  student_status_changed: { target: ['student'], outcomes: ['ok'], detail: { de: AUD_ONE(...STATUSES), para: AUD_ONE(...STATUSES) } },
+  student_graduation_corrected: { target: ['student'], outcomes: ['ok'], detail: { antes: AUD_GRAD, depois: AUD_GRAD } },
+  student_deleted: { target: ['student'], outcomes: ['ok'], detail: { presencas: AUD_INT(0, 1e7), graduacoes: AUD_INT(0, 1e5), avaliacoes: AUD_INT(0, 1e7) } },
+  promotion_created: { target: ['promotion'], outcomes: ['ok'], detail: { ...PROMO, data: isDate, criterios_cumpridos: AUD_BOOL } },
+  promotion_undone: { target: ['promotion'], outcomes: ['ok'], detail: PROMO },
+  lesson_created: { target: ['lesson'], outcomes: ['ok'], detail: { turma: AUD_NULL(AUD_ID), data: isDate, alunos: AUD_INT(0, LESSON_STUDENTS_MAX), tecnicas: AUD_INT(0, LESSON_TECHS_MAX), chamada: AUD_ONE(0, 1) } },
+  class_created: { target: ['class'], outcomes: ['ok'], detail: { dia: AUD_INT(0, 6), inicio: isTime, fim: isTime, nivel: AUD_ONE('todos', 'iniciante', 'intermediario', 'avancado', 'kids', 'competicao'),
+    modalidade: AUD_ONE('gi', 'nogi', 'livre'), ativa: AUD_ONE(0, 1), instrutor: AUD_NULL(AUD_ID) } },
+  class_updated: { target: ['class'], outcomes: ['ok'], detail: { campos: AUD_LIST(AUD_ONE(...CLASS_EDIT_FIELDS), CLASS_EDIT_FIELDS.length) } },
+  class_deleted: { target: ['class'], outcomes: ['ok'] },
+  technique_created: { target: ['technique'], outcomes: ['ok'], detail: { categoria: AUD_ONE(...CATEGORIES), faixa_minima: AUD_ONE(...ADULT), ativa: AUD_ONE(0, 1) } },
+  technique_updated: { target: ['technique'], outcomes: ['ok'], detail: { campos: AUD_LIST(AUD_ONE(...TECH_EDIT_FIELDS), TECH_EDIT_FIELDS.length) } },
+  technique_deleted: { target: ['technique'], outcomes: ['ok'] },
+  rules_updated: { target: ['rules'], outcomes: ['ok'], detail: { faixas: AUD_LIST(AUD_ONE(...BELTS), BELTS.length) } },
+  settings_updated: { target: ['settings'], outcomes: ['ok'] },
+  students_exported: { target: ['export'], outcomes: ['ok'], detail: { linhas: AUD_INT(0, 1e6) } },
+  action_denied: { target: [...Object.keys(TARGET_ID), null], outcomes: ['denied'], detail: { acao: AUD_ONE(...DENY_ACTIONS), motivo: AUD_ONE('requer_admin', 'autoria_ou_prazo', 'ultimo_admin') } }
+};
+// Valores da linha, já conferidos. target = [tipo, id] ou null. targetSql: id do alvo calculado no banco (técnica recém-criada).
+function auditValues(event, { actor = null, target = null, outcome = 'ok', detail = null } = {}, targetSql = false) {
+  const spec = Object.prototype.hasOwnProperty.call(AUDIT_EVENTS, event) ? AUDIT_EVENTS[event] : null;
+  const fail = why => { throw new Error(`auditoria: ${event}: ${why}`); };
+  if (!spec) fail('evento fora do catálogo');
+  if (!spec.outcomes.includes(outcome)) fail('resultado não previsto');
+  if (actor === null ? !spec.anon : !AUD_ID(actor)) fail('ator inválido');
+  if (target !== null && (!Array.isArray(target) || target.length !== 2)) fail('alvo inválido');
+  const [tt, tid] = target || [null, null];
+  if (!spec.target.includes(tt)) fail('tipo de alvo não previsto');
+  if (tt === null ? tid !== null : targetSql ? tid !== null : !TARGET_ID[tt](tid)) fail('id do alvo inválido');
+  let text = null;
+  if (spec.text) { if (detail !== null) fail('detail não previsto'); text = spec.text; }
+  else if (detail !== null) {
+    if (!spec.detail || typeof detail !== 'object' || Array.isArray(detail)) fail('detail não previsto');
+    for (const k of Object.keys(detail)) if (!Object.prototype.hasOwnProperty.call(spec.detail, k) || !spec.detail[k](detail[k])) fail('chave ou valor fora da lista: ' + k);
+    text = JSON.stringify(detail);
+    if (enc.encode(text).length > (spec.max || 1024)) fail('detail grande demais');
+  }
+  const staffId = spec.legacy === 'actor' ? actor : spec.legacy === 'target' ? tid : null;
+  return [event, staffId, text, actor, tt, tid, outcome];
+}
+// Comando de auditoria para entrar NO MESMO batch da escrita. `cond.where`/`cond.params`: a mesma condição da escrita principal
+// (o evento só é gravado se a escrita acontece). `cond.targetSql`/`cond.targetParams`: expressão SQL do id do alvo.
+function audit(db, event, fields, cond = {}) {
+  const [ev, staffId, text, actor, tt, tid, outcome] = auditValues(event, fields, !!cond.targetSql);
+  const cols = 'INSERT INTO audit_log (event, staff_id, detail, actor_id, target_type, target_id, outcome)';
+  if (!cond.where && !cond.targetSql) return db.prepare(`${cols} VALUES (?, ?, ?, ?, ?, ?, ?)`).bind(ev, staffId, text, actor, tt, tid, outcome);
+  const tExpr = cond.targetSql ? `(${cond.targetSql})` : '?', tParams = cond.targetSql ? (cond.targetParams || []) : [tid];
+  return db.prepare(`${cols} SELECT ?, ?, ?, ?, ?, ${tExpr}, ? WHERE ${cond.where || '1'}`).bind(ev, staffId, text, actor, tt, ...tParams, outcome, ...(cond.params || []));
+}
+// Negação com identidade (V6): no máximo UM action_denied por (ator, ação) a cada 15 min (uma conta logada não enche a tabela
+// repetindo a mesma tentativa). Melhor esforço: se a gravação falhar, a resposta de negação é a mesma (a auditoria não muda
+// o comportamento de segurança da operação).
+async function auditDenied(db, actor, acao, motivo, target) {
+  try {
+    await audit(db, 'action_denied', { actor, target, outcome: 'denied', detail: { acao, motivo } }, { where: `NOT EXISTS (SELECT 1 FROM audit_log WHERE event = 'action_denied'
+      AND at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-15 minutes') AND actor_id = ? AND json_extract(detail, '$.acao') = ?)`, params: [actor, acao] }).run();
+  } catch { /* a negação continua valendo */ }
+}
 const RESET_BAD = 'Código inválido. Confira o código e o e-mail; se o erro continuar, peça um novo código.';
 // ---------- código de ativação (primeiro acesso de uma instalação nova) ----------
 // Gerado pelo operador (tools/setup-code.mjs): 26 caracteres Crockford (130 bits), validade limitada. No banco ficam só o
@@ -592,12 +707,15 @@ async function saveLesson(db, staff, b, id) {
       .bind(o.class_id, o.date, o.start_time, o.end_time, o.modality, o.title, o.notes, o.instructor_id, roll, id));
     stmts.push(db.prepare('DELETE FROM attendance WHERE lesson_id = ?').bind(id));
     stmts.push(db.prepare('DELETE FROM lesson_techniques WHERE lesson_id = ?').bind(id));
-    stmts.push(audit(db, 'lesson_updated', staff.id, JSON.stringify({ lesson_id: id, before,
-      after: { ...o, roll_called: roll, student_ids: studentIds.slice().sort(), technique_ids: techIds.slice().sort((x, y) => x - y) } })));
+    // Só registra se a aula ainda existe no momento do batch (excluída no meio do caminho: o UPDATE não muda nada e não há evento).
+    stmts.push(audit(db, 'lesson_updated', { actor: staff.id, target: ['lesson', id], detail: { lesson_id: id, before,
+      after: { ...o, roll_called: roll, student_ids: studentIds.slice().sort(), technique_ids: techIds.slice().sort((x, y) => x - y) } } },
+      { where: 'EXISTS (SELECT 1 FROM lessons WHERE id = ?)', params: [id] }));
   } else {
     id = uuid();
     stmts.push(db.prepare('INSERT INTO lessons (id, class_id, date, start_time, end_time, modality, title, notes, instructor_id, created_by, roll_called) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
       .bind(id, o.class_id, o.date, o.start_time, o.end_time, o.modality, o.title, o.notes, o.instructor_id, staff.id, roll));
+    stmts.push(audit(db, 'lesson_created', { actor: staff.id, target: ['lesson', id], detail: { turma: o.class_id, data: o.date, alunos: studentIds.length, tecnicas: techIds.length, chamada: roll } }));
   }
   // Presenças, técnicas e "vista em aula" em 3 comandos fixos, qualquer que seja o tamanho das listas (antes: 1 comando
   // por aluno + 1 por técnica + 1 por aluno x técnica). Mesmo resultado: quem estava na aula passa a ter cada técnica
@@ -668,7 +786,8 @@ async function promote(db, staff, id, b) {
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(pid, id, kind, st.belt, st.degrees, toBelt, toDeg, st.belt_since, st.degree_since, st.imported_classes_belt || 0, st.imported_classes_degree || 0, when, criteriaMet, str(b.notes, { max: 500, field: 'Observação' }), staff.id),
     kind === 'grau'
       ? db.prepare(`UPDATE students SET degrees = ?, degree_since = ?, imported_classes_degree = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`).bind(toDeg, when, id)
-      : db.prepare(`UPDATE students SET belt = ?, degrees = 0, belt_since = ?, degree_since = ?, imported_classes_belt = 0, imported_classes_degree = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`).bind(toBelt, when, when, id)
+      : db.prepare(`UPDATE students SET belt = ?, degrees = 0, belt_since = ?, degree_since = ?, imported_classes_belt = 0, imported_classes_degree = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`).bind(toBelt, when, when, id),
+    audit(db, 'promotion_created', { actor: staff.id, target: ['promotion', pid], detail: { aluno: id, tipo: kind, de_faixa: st.belt, de_graus: st.degrees, para_faixa: toBelt, para_graus: toDeg, data: when, criterios_cumpridos: !!criteriaMet } })
   ]);
   return pid;
 }
@@ -732,7 +851,9 @@ async function route(req, env, url, ctx) {
           AND EXISTS (SELECT 1 FROM settings WHERE key = ? AND value > ?)`).bind(id, name, email, hash, salt, belt, SETUP_HASH_KEY, given, SETUP_EXP_KEY, nowIso),
       db.prepare(`INSERT INTO settings (key, value) SELECT 'academy_name', ? WHERE ${created} ON CONFLICT (key) DO UPDATE SET value = excluded.value`).bind(academy, id),
       db.prepare(`INSERT INTO settings (key, value) SELECT 'setup_done', '1' WHERE ${created} ON CONFLICT (key) DO UPDATE SET value = '1'`).bind(id),
-      db.prepare(`DELETE FROM settings WHERE key IN ('setup_token', ?, ?) AND ${created}`).bind(SETUP_HASH_KEY, SETUP_EXP_KEY, id)
+      db.prepare(`DELETE FROM settings WHERE key IN ('setup_token', ?, ?) AND ${created}`).bind(SETUP_HASH_KEY, SETUP_EXP_KEY, id),
+      // Instalação concluída e primeiro administrador: só se ESTE batch criou o administrador (mesma condição dos demais).
+      audit(db, 'setup_completed', { actor: id, target: ['staff', id], detail: { papel: 'admin' } }, { where: created, params: [id] })
     ]);
     if (res?.[0]?.meta?.changes !== 1) {
       // Outra requisição concluiu antes (ou o código foi trocado/consumido/venceu entre a conferência e o batch).
@@ -767,7 +888,7 @@ async function route(req, env, url, ctx) {
       await db.batch([
         db.prepare('INSERT INTO login_attempts (key) VALUES (?)').bind(pairKey), db.prepare('INSERT INTO login_attempts (key) VALUES (?)').bind(ipKey),
         db.prepare("DELETE FROM login_attempts WHERE at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 hour')"),
-        ...(reached.length ? [audit(db, 'login_locked', s ? s.id : null, JSON.stringify({ limites: reached, rede: net, conta_existe: !!s }))] : [])
+        ...(reached.length ? [audit(db, 'login_locked', { target: s ? ['staff', s.id] : null, outcome: 'limit', detail: { limites: reached, rede: net, conta_existe: !!s } })] : [])
       ]);
       throw new HttpError(401, 'E-mail ou senha incorretos.');
     }
@@ -777,7 +898,7 @@ async function route(req, env, url, ctx) {
       db.prepare('INSERT INTO auth_sessions (token_hash, staff_id, expires_at) VALUES (?, ?, ?)').bind(await sha256(token), s.id, new Date(Date.now() + SESSION_DAYS * 864e5).toISOString()),
       db.prepare("DELETE FROM auth_sessions WHERE expires_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"),
       db.prepare('DELETE FROM login_attempts WHERE key = ?').bind(pairKey),
-      audit(db, 'login_ok', s.id, JSON.stringify({ rede: net, aparelho_conhecido: known }))
+      audit(db, 'login_ok', { actor: s.id, target: ['staff', s.id], detail: { rede: net, aparelho_conhecido: known } })
     ]);
     const h = new Headers({ 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
     h.append('set-cookie', sessionCookie(token, SESSION_DAYS * 86400));
@@ -800,7 +921,7 @@ async function route(req, env, url, ctx) {
       const reached = [...(c.p + 1 === LOGIN_LIMITS.pair ? ['par'] : []), ...(c.i + 1 === LOGIN_LIMITS.ip ? ['rede'] : [])];
       await db.batch([db.prepare('INSERT INTO login_attempts (key) VALUES (?)').bind(pairKey), db.prepare('INSERT INTO login_attempts (key) VALUES (?)').bind(ipKey),
         db.prepare("DELETE FROM login_attempts WHERE at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 hour')"),
-        ...(reached.length ? [audit(db, 'reset_failed', staffId || null, JSON.stringify({ limites: reached, rede: net }))] : [])]);
+        ...(reached.length ? [audit(db, 'reset_failed', { target: staffId ? ['staff', staffId] : null, outcome: 'limit', detail: { limites: reached, rede: net } })] : [])]);
     };
     const s = await first(db, 'SELECT id FROM staff WHERE email = ? AND active = 1', email);
     const pr = s ? await first(db, 'SELECT * FROM password_resets WHERE staff_id = ?', s.id) : null;
@@ -822,7 +943,7 @@ async function route(req, env, url, ctx) {
       db.prepare(`UPDATE staff SET pass_hash = ?, pass_salt = ? WHERE id = ? AND active = 1 AND ${pending}`).bind(hash, salt, s.id, ...P),
       db.prepare(`DELETE FROM auth_sessions WHERE staff_id = ? AND ${pending}`).bind(s.id, ...P),
       db.prepare(`DELETE FROM login_attempts WHERE (key = ? OR key = ?) AND ${pending}`).bind(pairKey, 'email:' + email + '|ip:' + net, ...P),
-      db.prepare(`INSERT INTO audit_log (event, staff_id, detail) SELECT 'reset_used', ?, 'senha redefinida; sessões encerradas' WHERE ${pending}`).bind(s.id, ...P),
+      audit(db, 'reset_used', { actor: s.id, target: ['staff', s.id] }, { where: pending, params: P }),
       db.prepare("UPDATE password_resets SET used_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE staff_id = ? AND code_hash = ? AND used_at IS NULL AND expires_at > ?").bind(...P)
     ]);
     if (res?.[4]?.meta?.changes !== 1) throw new HttpError(400, 'Este código já foi utilizado. Peça um novo código.');
@@ -831,7 +952,18 @@ async function route(req, env, url, ctx) {
 
   if (path === '/api/logout' && method === 'POST') {
     const t = cookieOf(req, COOKIE);
-    if (t) await run(db, 'DELETE FROM auth_sessions WHERE token_hash = ?', await sha256(t));
+    if (t) {
+      // Logout de uma sessão que existe: o evento e o fim da sessão no mesmo batch, e o evento só se a sessão ainda existe naquele
+      // instante (dois logouts simultâneos: um evento). Sem sessão (cookie vencido, forjado ou ausente): nada a registrar.
+      const th = await sha256(t);
+      const sess = /^[0-9a-f]{64}$/.test(t) ? await first(db, 'SELECT staff_id FROM auth_sessions WHERE token_hash = ?', th) : null;
+      // Sair SEMPRE encerra a sessão (é a operação que aumenta a segurança; a auditoria não pode impedi-la): se o evento não puder
+      // ser montado ou gravado, a sessão é apagada sozinha. Única exceção ao "tudo ou nada"; a exportação, ao contrário, falha fechada.
+      let ev = null;
+      try { if (sess) ev = audit(db, 'logout', { actor: sess.staff_id, target: ['staff', sess.staff_id] }, { where: 'EXISTS (SELECT 1 FROM auth_sessions WHERE token_hash = ? AND staff_id = ?)', params: [th, sess.staff_id] }); } catch { ev = null; }
+      const end = () => db.prepare('DELETE FROM auth_sessions WHERE token_hash = ?').bind(th);
+      try { await db.batch([...(ev ? [ev] : []), end()]); } catch (e) { if (!ev) throw e; await end().run(); }
+    }
     return json({ ok: true }, 200, { 'set-cookie': sessionCookie('', 0) });
   }
 
@@ -840,12 +972,17 @@ async function route(req, env, url, ctx) {
   if (!me) throw new HttpError(401, 'Sessão expirada. Entre novamente.');
   // Matriz de acesso (ver README, "Perfis"). Professor faz o dia a dia; o que está marcado com admin() é só do administrador.
   // Editar ou excluir chamada e desfazer graduação: o professor só mexe no que ele mesmo registrou há menos de OWN_DAYS dias.
-  const admin = () => { if (me.role !== 'admin') throw new HttpError(403, 'Apenas o administrador pode fazer isso.'); };
+  // V6: cada negação abaixo deixa um action_denied (ação tentada + motivo + alvo, sem dados), com o limite de auditDenied. A regra
+  // de autorização e a resposta não mudam: a gravação acontece antes do throw e não pode trocá-lo.
+  const admin = async (acao, target = null) => { if (me.role !== 'admin') { await auditDenied(db, me.id, acao, 'requer_admin', target); throw new HttpError(403, 'Apenas o administrador pode fazer isso.'); } };
   const OWN_DAYS = 7;
-  const ownRecent = (staffId, createdAt, what) => {
+  const ownRecent = async (staffId, createdAt, what, acao, target) => {
     if (me.role === 'admin') return;
     // Autoria e idade vêm do registro no banco (created_by, created_at), nunca do corpo da requisição. Com OWN_DAYS dias ou mais: negado.
-    if (staffId !== me.id || !(Date.now() - Date.parse(createdAt) < OWN_DAYS * 864e5)) throw new HttpError(403, `Só o administrador altera ou exclui ${what} de outra pessoa ou com ${OWN_DAYS} dias ou mais.`);
+    if (staffId !== me.id || !(Date.now() - Date.parse(createdAt) < OWN_DAYS * 864e5)) {
+      await auditDenied(db, me.id, acao, 'autoria_ou_prazo', target);
+      throw new HttpError(403, `Só o administrador altera ou exclui ${what} de outra pessoa ou com ${OWN_DAYS} dias ou mais.`);
+    }
   };
   let m;
 
@@ -863,7 +1000,7 @@ async function route(req, env, url, ctx) {
     if (!safeEqual((await hashPassword(typeof b.current === 'string' ? b.current : '', s.pass_salt)).hash, s.pass_hash)) {
       // Uma linha password_change_failed só quando ESTE erro esgota o limite (não uma por tentativa).
       const used = (await first(db, "SELECT count(*) n FROM login_attempts WHERE key = ? AND at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-15 minutes')", pwKey)).n;
-      if (used === PW_CHANGE_MAX) await audit(db, 'password_change_failed', me.id, JSON.stringify({ tentativas: used, janela_min: 15 })).run();
+      if (used === PW_CHANGE_MAX) await audit(db, 'password_change_failed', { actor: me.id, target: ['staff', me.id], outcome: 'limit', detail: { tentativas: used, janela_min: 15 } }).run();
       bad('Senha atual incorreta.');
     }
     await run(db, 'DELETE FROM login_attempts WHERE key = ?', pwKey);   // senha atual provada: o contador volta a zero
@@ -877,7 +1014,7 @@ async function route(req, env, url, ctx) {
       db.prepare('DELETE FROM auth_sessions WHERE staff_id = ?').bind(me.id),
       db.prepare('DELETE FROM password_resets WHERE staff_id = ?').bind(me.id),
       db.prepare('DELETE FROM login_attempts WHERE key = ?').bind(pwKey),
-      audit(db, 'password_changed', me.id, JSON.stringify({ por: 'propria_conta', sessoes_encerradas: true, codigos_de_recuperacao_invalidados: true })),
+      audit(db, 'password_changed', { actor: me.id, target: ['staff', me.id], detail: { por: 'propria_conta', sessoes_encerradas: true, codigos_de_recuperacao_invalidados: true } }),
       db.prepare('INSERT INTO auth_sessions (token_hash, staff_id, expires_at) VALUES (?, ?, ?)').bind(await sha256(token), me.id, new Date(Date.now() + SESSION_DAYS * 864e5).toISOString())
     ]);
     return json({ ok: true }, 200, { 'set-cookie': sessionCookie(token, SESSION_DAYS * 86400) });
@@ -899,7 +1036,10 @@ async function route(req, env, url, ctx) {
     const o = await STUDENT_FIELDS(await body(), null);
     const id = uuid();
     const cols = Object.keys(o);
-    await run(db, `INSERT INTO students (id, ${cols.join(',')}) VALUES (?, ${cols.map(() => '?').join(',')})`, id, ...cols.map(c => o[c]));
+    await db.batch([
+      db.prepare(`INSERT INTO students (id, ${cols.join(',')}) VALUES (?, ${cols.map(() => '?').join(',')})`).bind(id, ...cols.map(c => o[c])),
+      audit(db, 'student_created', { actor: me.id, target: ['student', id], detail: { situacao: o.status, faixa: o.belt, graus: o.degrees } })
+    ]);
     return json(await studentDetail(db, id), 201);
   }
   if ((m = path.match(/^\/api\/students\/([0-9a-f-]{36})$/))) {
@@ -907,13 +1047,33 @@ async function route(req, env, url, ctx) {
     if (method === 'GET') return json(await studentDetail(db, id));
     const ex = await first(db, 'SELECT * FROM students WHERE id = ?', id);
     if (!ex) throw new HttpError(404, 'Aluno não encontrado.');
+    const T = ['student', id], alive = { where: 'EXISTS (SELECT 1 FROM students WHERE id = ?)', params: [id] };
     if (method === 'PUT') {
-      const o = await STUDENT_FIELDS(await body(), ex, me.role === 'admin');
+      let o;
+      try { o = await STUDENT_FIELDS(await body(), ex, me.role === 'admin'); }
+      catch (e) { if (e instanceof HttpError && e.status === 403) await auditDenied(db, me.id, 'student_graduation_fix', 'requer_admin', T); throw e; }
       const cols = Object.keys(o);
-      await run(db, `UPDATE students SET ${cols.map(c => c + ' = ?').join(', ')}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`, ...cols.map(c => o[c]), id);
+      // Eventos (V6) no mesmo batch e ANTES do UPDATE (as condições olham o estado anterior): só nomes de campos, nunca valores
+      // pessoais; situação com de/para; correção de graduação (só admin) com os valores de antes e depois (datas e contagens).
+      const same = (a, b) => (a ?? null) === (b ?? null) || (a != null && b != null && String(a) === String(b));
+      const campos = STUDENT_EDIT_FIELDS.filter(k => k in o && !same(o[k], ex[k]));
+      const grad = GRADUATION_FIELDS.filter(k => k in o && !same(o[k], ex[k]));
+      const evs = [];
+      if (campos.length) evs.push(audit(db, 'student_updated', { actor: me.id, target: T, detail: { campos } }, alive));
+      if (o.status !== ex.status) evs.push(audit(db, 'student_status_changed', { actor: me.id, target: T, detail: { de: ex.status, para: o.status } },
+        { where: 'EXISTS (SELECT 1 FROM students WHERE id = ? AND status <> ?)', params: [id, o.status] }));
+      if (grad.length) { const antes = Object.fromEntries(GRADUATION_FIELDS.map(k => [k, ex[k]])); evs.push(audit(db, 'student_graduation_corrected', { actor: me.id, target: T, detail: { antes, depois: { ...antes, ...Object.fromEntries(grad.map(k => [k, o[k]])) } } }, alive)); }
+      await db.batch([...evs, db.prepare(`UPDATE students SET ${cols.map(c => c + ' = ?').join(', ')}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`).bind(...cols.map(c => o[c]), id)]);
       return json(await studentDetail(db, id));
     }
-    if (method === 'DELETE') { admin(); await run(db, 'DELETE FROM students WHERE id = ?', id); return json({ ok: true }); }
+    if (method === 'DELETE') {
+      await admin('student_delete', T);
+      // Exclusão (comportamento atual mantido; a política fica para a 6.4-D): o evento leva só o tamanho do histórico apagado em
+      // cascata, sem dados do aluno, e só é gravado se o aluno ainda existe no batch da exclusão.
+      const n = await first(db, 'SELECT (SELECT count(*) FROM attendance WHERE student_id = ?) a, (SELECT count(*) FROM promotions WHERE student_id = ?) p, (SELECT count(*) FROM skills WHERE student_id = ?) s', id, id, id);
+      await db.batch([audit(db, 'student_deleted', { actor: me.id, target: T, detail: { presencas: n.a, graduacoes: n.p, avaliacoes: n.s } }, alive), db.prepare('DELETE FROM students WHERE id = ?').bind(id)]);
+      return json({ ok: true });
+    }
   }
   if ((m = path.match(/^\/api\/students\/([0-9a-f-]{36})\/promote$/)) && method === 'POST') {
     await promote(db, me, m[1], await body());
@@ -945,10 +1105,13 @@ async function route(req, env, url, ctx) {
   if ((m = path.match(/^\/api\/promotions\/([0-9a-f-]{36})$/)) && method === 'DELETE') {
     const p = await first(db, 'SELECT * FROM promotions WHERE id = ?', m[1]);
     if (!p) throw new HttpError(404, 'Graduação não encontrada.');
-    ownRecent(p.staff_id, p.created_at, 'graduações');
+    await ownRecent(p.staff_id, p.created_at, 'graduações', 'promotion_undo', ['promotion', p.id]);
     const latest = await first(db, 'SELECT id FROM promotions WHERE student_id = ? ORDER BY date DESC, created_at DESC LIMIT 1', p.student_id);
     if (latest.id !== p.id) bad('Só é possível desfazer a graduação mais recente do aluno.');
     await db.batch([
+      // A graduação desfeita (de/para dela). Só se ainda existe no batch: dois "desfazer" simultâneos geram um evento.
+      audit(db, 'promotion_undone', { actor: me.id, target: ['promotion', p.id], detail: { aluno: p.student_id, tipo: p.kind, de_faixa: p.from_belt, de_graus: p.from_degrees, para_faixa: p.to_belt, para_graus: p.to_degrees } },
+        { where: 'EXISTS (SELECT 1 FROM promotions WHERE id = ?)', params: [p.id] }),
       db.prepare(`UPDATE students SET belt = ?, degrees = ?, belt_since = ?, degree_since = ?, imported_classes_belt = ?, imported_classes_degree = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`)
         .bind(p.from_belt, p.from_degrees, p.from_belt_since, p.from_degree_since, p.from_imported_belt, p.from_imported_degree, p.student_id),
       db.prepare('DELETE FROM promotions WHERE id = ?').bind(p.id)
@@ -959,18 +1122,30 @@ async function route(req, env, url, ctx) {
   // ---------- turmas / horários ----------
   if (path === '/api/classes' && method === 'POST') {
     const o = CLASS_FIELDS(await body()); await instructorExists(db, o.instructor_id); const id = uuid();
-    await run(db, 'INSERT INTO classes (id, name, weekday, start_time, end_time, level, modality, instructor_id, active) VALUES (?,?,?,?,?,?,?,?,?)', id, o.name, o.weekday, o.start_time, o.end_time, o.level, o.modality, o.instructor_id, o.active);
+    await db.batch([
+      db.prepare('INSERT INTO classes (id, name, weekday, start_time, end_time, level, modality, instructor_id, active) VALUES (?,?,?,?,?,?,?,?,?)').bind(id, o.name, o.weekday, o.start_time, o.end_time, o.level, o.modality, o.instructor_id, o.active),
+      audit(db, 'class_created', { actor: me.id, target: ['class', id], detail: { dia: o.weekday, inicio: o.start_time, fim: o.end_time, nivel: o.level, modalidade: o.modality, ativa: o.active, instrutor: o.instructor_id } })
+    ]);
     return json(await first(db, 'SELECT * FROM classes WHERE id = ?', id), 201);
   }
   if ((m = path.match(/^\/api\/classes\/([0-9a-f-]{36})$/))) {
     const ex = await first(db, 'SELECT * FROM classes WHERE id = ?', m[1]);
     if (!ex) throw new HttpError(404, 'Turma não encontrada.');
+    const T = ['class', ex.id], alive = { where: 'EXISTS (SELECT 1 FROM classes WHERE id = ?)', params: [ex.id] };
     if (method === 'PUT') {
       const o = CLASS_FIELDS(await body()); await instructorExists(db, o.instructor_id);
-      await run(db, 'UPDATE classes SET name=?, weekday=?, start_time=?, end_time=?, level=?, modality=?, instructor_id=?, active=? WHERE id=?', o.name, o.weekday, o.start_time, o.end_time, o.level, o.modality, o.instructor_id, o.active, m[1]);
+      const campos = CLASS_EDIT_FIELDS.filter(k => (o[k] ?? null) !== (ex[k] ?? null));
+      await db.batch([
+        db.prepare('UPDATE classes SET name=?, weekday=?, start_time=?, end_time=?, level=?, modality=?, instructor_id=?, active=? WHERE id=?').bind(o.name, o.weekday, o.start_time, o.end_time, o.level, o.modality, o.instructor_id, o.active, m[1]),
+        ...(campos.length ? [audit(db, 'class_updated', { actor: me.id, target: T, detail: { campos } }, alive)] : [])
+      ]);
       return json(await first(db, 'SELECT * FROM classes WHERE id = ?', m[1]));
     }
-    if (method === 'DELETE') { admin(); await run(db, 'DELETE FROM classes WHERE id = ?', m[1]); return json({ ok: true }); }
+    if (method === 'DELETE') {
+      await admin('class_delete', T);
+      await db.batch([audit(db, 'class_deleted', { actor: me.id, target: T }, alive), db.prepare('DELETE FROM classes WHERE id = ?').bind(ex.id)]);
+      return json({ ok: true });
+    }
   }
 
   // ---------- aulas e chamada ----------
@@ -988,11 +1163,13 @@ async function route(req, env, url, ctx) {
     const ex = await first(db, 'SELECT id, created_by, created_at FROM lessons WHERE id = ?', m[1]);
     if (!ex) throw new HttpError(404, 'Aula não encontrada.');
     // V3: a edição substitui a lista de presença inteira, então segue a MESMA regra da exclusão (autor + menos de OWN_DAYS dias, ou admin).
-    if (method === 'PUT') { ownRecent(ex.created_by, ex.created_at, 'chamadas'); await saveLesson(db, me, await body(), m[1]); return json(await lessonOut(db, m[1])); }
+    if (method === 'PUT') { await ownRecent(ex.created_by, ex.created_at, 'chamadas', 'lesson_update', ['lesson', ex.id]); await saveLesson(db, me, await body(), m[1]); return json(await lessonOut(db, m[1])); }
     if (method === 'DELETE') {
-      ownRecent(ex.created_by, ex.created_at, 'chamadas');
+      await ownRecent(ex.created_by, ex.created_at, 'chamadas', 'lesson_delete', ['lesson', ex.id]);
       const before = await lessonSnapshot(db, m[1]);
-      await db.batch([audit(db, 'lesson_deleted', me.id, JSON.stringify({ lesson_id: m[1], before })), db.prepare('DELETE FROM lessons WHERE id = ?').bind(m[1])]);
+      // Evento só se a aula ainda existe no batch (duas exclusões simultâneas: um evento, como uma exclusão).
+      await db.batch([audit(db, 'lesson_deleted', { actor: me.id, target: ['lesson', m[1]], detail: { lesson_id: m[1], before } }, { where: 'EXISTS (SELECT 1 FROM lessons WHERE id = ?)', params: [m[1]] }),
+        db.prepare('DELETE FROM lessons WHERE id = ?').bind(m[1])]);
       return json({ ok: true });
     }
   }
@@ -1007,71 +1184,98 @@ async function route(req, env, url, ctx) {
     active: flag(b.active, 'Ativa', 1)
   });
   if (path === '/api/techniques' && method === 'POST') {
-    admin();
+    await admin('technique_create');
     const o = TECH(await body());
     if (await first(db, 'SELECT id FROM techniques WHERE name = ? COLLATE NOCASE', o.name)) throw new HttpError(409, 'Já existe uma técnica com esse nome.');
-    const r = await run(db, 'INSERT INTO techniques (name, category, min_belt, difficulty, description, active) VALUES (?,?,?,?,?,?)', o.name, o.category, o.min_belt, o.difficulty, o.description, o.active);
-    return json(await first(db, 'SELECT * FROM techniques WHERE id = ?', r.meta.last_row_id), 201);
+    // O id (autoincremento) só existe depois do INSERT: o evento, no mesmo batch, busca-o pelo nome (UNIQUE) logo em seguida.
+    await db.batch([
+      db.prepare('INSERT INTO techniques (name, category, min_belt, difficulty, description, active) VALUES (?,?,?,?,?,?)').bind(o.name, o.category, o.min_belt, o.difficulty, o.description, o.active),
+      audit(db, 'technique_created', { actor: me.id, target: ['technique', null], detail: { categoria: o.category, faixa_minima: o.min_belt, ativa: o.active } },
+        { targetSql: 'SELECT CAST(id AS TEXT) FROM techniques WHERE name = ?', targetParams: [o.name] })
+    ]);
+    return json(await first(db, 'SELECT * FROM techniques WHERE name = ?', o.name), 201);
   }
   if ((m = path.match(/^\/api\/techniques\/(\d+)$/))) {
-    admin();
+    await admin(method === 'DELETE' ? 'technique_delete' : 'technique_update', /^\d{1,10}$/.test(m[1]) ? ['technique', m[1]] : null);
     const ex = await first(db, 'SELECT * FROM techniques WHERE id = ?', +m[1]);
     if (!ex) throw new HttpError(404, 'Técnica não encontrada.');
+    const T = ['technique', String(ex.id)], alive = { where: 'EXISTS (SELECT 1 FROM techniques WHERE id = ?)', params: [ex.id] };
     if (method === 'PUT') {
       const o = TECH(await body());
       if (await first(db, 'SELECT id FROM techniques WHERE name = ? COLLATE NOCASE AND id <> ?', o.name, ex.id)) throw new HttpError(409, 'Já existe uma técnica com esse nome.');
-      await run(db, 'UPDATE techniques SET name=?, category=?, min_belt=?, difficulty=?, description=?, active=? WHERE id=?', o.name, o.category, o.min_belt, o.difficulty, o.description, o.active, ex.id);
+      const campos = TECH_EDIT_FIELDS.filter(k => (o[k] ?? null) !== (ex[k] ?? null));
+      await db.batch([
+        db.prepare('UPDATE techniques SET name=?, category=?, min_belt=?, difficulty=?, description=?, active=? WHERE id=?').bind(o.name, o.category, o.min_belt, o.difficulty, o.description, o.active, ex.id),
+        ...(campos.length ? [audit(db, 'technique_updated', { actor: me.id, target: T, detail: { campos } }, alive)] : [])
+      ]);
       return json(await first(db, 'SELECT * FROM techniques WHERE id = ?', ex.id));
     }
     if (method === 'DELETE') {
       const used = await first(db, 'SELECT (SELECT count(*) FROM lesson_techniques WHERE technique_id = ?) + (SELECT count(*) FROM skills WHERE technique_id = ?) n', ex.id, ex.id);
       if (used.n) bad('Essa técnica já tem aulas ou avaliações. Desative em vez de excluir.');
-      await run(db, 'DELETE FROM techniques WHERE id = ?', ex.id); return json({ ok: true });
+      await db.batch([audit(db, 'technique_deleted', { actor: me.id, target: T }, alive), db.prepare('DELETE FROM techniques WHERE id = ?').bind(ex.id)]);
+      return json({ ok: true });
     }
   }
 
   // ---------- critérios, ajustes e equipe (administrador) ----------
   if (path === '/api/rules' && method === 'PUT') {
-    admin();
+    await admin('rules_update', ['rules', null]);
     const b = await body();
     if (!Array.isArray(b.rules) || !b.rules.length) bad('Nada para salvar.');
     if (b.rules.length > RULES_MAX) bad(`No máximo ${RULES_MAX} regras (uma por faixa).`);
-    const stmts = [], seen = new Set();
+    const stmts = [], seen = new Set(), RCOLS = ['degree_months', 'degree_classes', 'belt_months', 'belt_classes', 'curriculum_pct', 'next_min_age'];
+    const current = new Map((await all(db, 'SELECT * FROM rules')).map(r => [r.belt, r])), changed = [];
     for (const r of b.rules) {
       if (!r || typeof r !== 'object' || Array.isArray(r)) bad('Regra inválida.');
       const belt = oneOf(r.belt, BELTS, 'Faixa'); if (!belt) bad('Faixa inválida.');
       if (seen.has(belt)) bad(`A faixa ${belt} aparece mais de uma vez.`); seen.add(belt);
       const isBlack = belt === 'preta';
-      stmts.push(db.prepare('UPDATE rules SET degree_months=?, degree_classes=?, belt_months=?, belt_classes=?, curriculum_pct=?, next_min_age=? WHERE belt=?').bind(
+      const vals = [
         real(r.degree_months, 0, 120, `Meses entre graus (${belt})`) ?? bad(`Meses entre graus (${belt}) é obrigatório.`),
         int(r.degree_classes ?? 0, 0, 1000, `Aulas entre graus (${belt})`),
         isBlack ? null : real(r.belt_months, 0, 240, `Meses na faixa (${belt})`),
         isBlack ? null : int(r.belt_classes, 0, 5000, `Aulas na faixa (${belt})`),
         isBlack ? null : int(r.curriculum_pct, 0, 100, `Currículo % (${belt})`),
-        isBlack ? null : int(r.next_min_age, 0, 100, `Idade mínima (${belt})`), belt));
+        isBlack ? null : int(r.next_min_age, 0, 100, `Idade mínima (${belt})`)];
+      const cur = current.get(belt);
+      if (!cur || RCOLS.some((c, i) => (cur[c] ?? null) !== vals[i])) changed.push(belt);
+      stmts.push(db.prepare('UPDATE rules SET degree_months=?, degree_classes=?, belt_months=?, belt_classes=?, curriculum_pct=?, next_min_age=? WHERE belt=?').bind(...vals, belt));
     }
     if (!stmts.length) bad('Nada para salvar.');
+    // Um evento por gravação de critérios, com as faixas cujos valores mudaram (comparadas com o que estava no banco ao ler).
+    if (changed.length) stmts.push(audit(db, 'rules_updated', { actor: me.id, target: ['rules', null], detail: { faixas: changed } }));
     await db.batch(stmts);
     return json({ ok: true });
   }
   if (path === '/api/settings' && method === 'PUT') {
-    admin();
+    await admin('settings_update', ['settings', 'academy_name']);
     const b = await body();
-    await run(db, "INSERT INTO settings (key, value) VALUES ('academy_name', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", str(b.academy_name, { min: 2, max: 80, field: 'Nome da academia', required: true }));
+    const name = str(b.academy_name, { min: 2, max: 80, field: 'Nome da academia', required: true });
+    // Evento só quando o valor muda de fato (condição avaliada no batch, antes da gravação). O nome em si não vai para a auditoria.
+    await db.batch([
+      audit(db, 'settings_updated', { actor: me.id, target: ['settings', 'academy_name'] }, { where: "NOT EXISTS (SELECT 1 FROM settings WHERE key = 'academy_name' AND value IS ?)", params: [name] }),
+      db.prepare("INSERT INTO settings (key, value) VALUES ('academy_name', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").bind(name)
+    ]);
     return json({ ok: true });
   }
   if (path === '/api/staff' && method === 'POST') {
-    admin();
+    await admin('staff_create');
     const b = await body();
     const email = checkEmail(b.email);
     if (await first(db, 'SELECT id FROM staff WHERE email = ?', email)) throw new HttpError(409, 'Já existe alguém da equipe com esse e-mail.');
     const { hash, salt } = await hashPassword(checkPassword(b.password, { email, name: b.name }));
     const id = uuid();
-    await run(db, 'INSERT INTO staff (id, name, email, pass_hash, pass_salt, role, belt) VALUES (?,?,?,?,?,?,?)', id, str(b.name, { min: 2, max: 80, field: 'Nome', required: true }), email, hash, salt, oneOf(b.role, ['admin', 'professor'], 'Função', 'professor'), oneOf(b.belt, BELTS, 'Faixa', null));
+    const name = str(b.name, { min: 2, max: 80, field: 'Nome', required: true }), role = oneOf(b.role, ['admin', 'professor'], 'Função', 'professor'), belt = oneOf(b.belt, BELTS, 'Faixa', null);
+    // Criação de membro da equipe (papel no detail: criação de administrador = papel "admin"). E-mail e nome não vão para a auditoria.
+    await db.batch([
+      db.prepare('INSERT INTO staff (id, name, email, pass_hash, pass_salt, role, belt) VALUES (?,?,?,?,?,?,?)').bind(id, name, email, hash, salt, role, belt),
+      audit(db, 'staff_created', { actor: me.id, target: ['staff', id], detail: { papel: role } })
+    ]);
     return json(await first(db, 'SELECT id, name, email, role, belt, active FROM staff WHERE id = ?', id), 201);
   }
   if ((m = path.match(/^\/api\/staff\/([0-9a-f-]{36})$/)) && method === 'PUT') {
-    admin();
+    await admin('staff_update', UUID_RE.test(m[1]) ? ['staff', m[1]] : null);
     const b = await body();
     const ex = await first(db, 'SELECT * FROM staff WHERE id = ?', m[1]);
     if (!ex) throw new HttpError(404, 'Pessoa não encontrada.');
@@ -1094,16 +1298,27 @@ async function route(req, env, url, ctx) {
     // Senha definida pelo administrador: no mesmo batch, fim das sessões da pessoa, códigos de recuperação pendentes e auditoria.
     // Todos os comandos levam a mesma condição e a alteração principal é o ÚLTIMO: os anteriores não mexem em papel/ativo,
     // então a condição dá o mesmo resultado em todos; se ela falhar, nada do batch muda.
-    if (b.password) { const { hash, salt } = await hashPassword(checkPassword(b.password, { email: ex.email, name: b.name ?? ex.name })); stmts.push(db.prepare(`UPDATE staff SET pass_hash=?, pass_salt=? WHERE id=? AND ${guard}`).bind(hash, salt, ex.id, ...G), db.prepare(`DELETE FROM auth_sessions WHERE staff_id = ? AND ${guard}`).bind(ex.id, ...G), db.prepare(`DELETE FROM password_resets WHERE staff_id = ? AND ${guard}`).bind(ex.id, ...G), db.prepare(`INSERT INTO audit_log (event, staff_id, detail) SELECT 'staff_password_reset', ?, ? WHERE ${guard}`).bind(me.id, JSON.stringify({ conta: ex.id, sessoes_encerradas: true, codigos_de_recuperacao_invalidados: true }), ...G)); }
+    if (b.password) { const { hash, salt } = await hashPassword(checkPassword(b.password, { email: ex.email, name: b.name ?? ex.name })); stmts.push(db.prepare(`UPDATE staff SET pass_hash=?, pass_salt=? WHERE id=? AND ${guard}`).bind(hash, salt, ex.id, ...G), db.prepare(`DELETE FROM auth_sessions WHERE staff_id = ? AND ${guard}`).bind(ex.id, ...G), db.prepare(`DELETE FROM password_resets WHERE staff_id = ? AND ${guard}`).bind(ex.id, ...G), audit(db, 'staff_password_reset', { actor: me.id, target: ['staff', ex.id], detail: { conta: ex.id, sessoes_encerradas: true, codigos_de_recuperacao_invalidados: true } }, { where: guard, params: G })); }
     // Desativar: sessões caem e códigos de recuperação pendentes são apagados (senão voltariam a valer se a conta fosse
     // reativada dentro dos 30 minutos). Mesmo batch da desativação.
     if (!active) stmts.push(db.prepare(`DELETE FROM auth_sessions WHERE staff_id = ? AND ${guard}`).bind(ex.id, ...G), db.prepare(`DELETE FROM password_resets WHERE staff_id = ? AND ${guard}`).bind(ex.id, ...G));
-    stmts.push(db.prepare(`UPDATE staff SET name=?, role=?, belt=?, active=? WHERE id=? AND ${guard}`).bind(str(b.name ?? ex.name, { min: 2, max: 80, field: 'Nome', required: true }), role, belt, active, ex.id, ...G));
+    const name = str(b.name ?? ex.name, { min: 2, max: 80, field: 'Nome', required: true });
+    // V6: eventos com a MESMA condição V8 (gravados se e somente se a alteração principal acontece) e antes dela, olhando o estado
+    // anterior. Papel e ativo só têm dois valores: "mudou no banco" (role <> novo) equivale a "de = o outro valor", sem ambiguidade.
+    const T = ['staff', ex.id], W = (extra = '', p = []) => ({ where: guard + extra, params: [...G, ...p] });
+    if (role !== ex.role) stmts.push(audit(db, 'staff_role_changed', { actor: me.id, target: T, detail: { de: ex.role, para: role } }, W(' AND EXISTS (SELECT 1 FROM staff WHERE id = ? AND role <> ?)', [ex.id, role])));
+    if (active !== ex.active) stmts.push(active
+      ? audit(db, 'staff_reactivated', { actor: me.id, target: T }, W(' AND EXISTS (SELECT 1 FROM staff WHERE id = ? AND active <> ?)', [ex.id, active]))
+      : audit(db, 'staff_deactivated', { actor: me.id, target: T, detail: { sessoes_encerradas: true, codigos_de_recuperacao_invalidados: true } }, W(' AND EXISTS (SELECT 1 FROM staff WHERE id = ? AND active <> ?)', [ex.id, active])));
+    const campos = [...(name !== ex.name ? ['name'] : []), ...((belt ?? null) !== (ex.belt ?? null) ? ['belt'] : [])];
+    if (campos.length) stmts.push(audit(db, 'staff_updated', { actor: me.id, target: T, detail: { campos } }, W()));
+    stmts.push(db.prepare(`UPDATE staff SET name=?, role=?, belt=?, active=? WHERE id=? AND ${guard}`).bind(name, role, belt, active, ex.id, ...G));
     const res = await db.batch(stmts);
     if (res?.[stmts.length - 1]?.meta?.changes !== 1) {
       // Só classifica a recusa (a proteção já foi a condição acima): alvo sumiu, autor perdeu o acesso, ou último admin.
       if (!(await first(db, 'SELECT 1 x FROM staff WHERE id = ?', ex.id))) throw new HttpError(404, 'Pessoa não encontrada.');
-      if (!(await first(db, "SELECT 1 x FROM staff WHERE id = ? AND role = 'admin' AND active = 1", me.id))) throw new HttpError(403, 'Apenas o administrador pode fazer isso.');
+      if (!(await first(db, "SELECT 1 x FROM staff WHERE id = ? AND role = 'admin' AND active = 1", me.id))) { await auditDenied(db, me.id, 'staff_update', 'requer_admin', T); throw new HttpError(403, 'Apenas o administrador pode fazer isso.'); }
+      await auditDenied(db, me.id, 'staff_update', 'ultimo_admin', T);
       throw new HttpError(409, 'É preciso manter pelo menos um administrador ativo.');
     }
     return json(await first(db, 'SELECT id, name, email, role, belt, active FROM staff WHERE id = ?', ex.id));
@@ -1111,7 +1326,7 @@ async function route(req, env, url, ctx) {
 
   // ---------- exportação ----------
   if (path === '/api/export/alunos.csv' && method === 'GET') {
-    admin();
+    await admin('students_export', ['export', 'alunos.csv']);
     const C = await computeAll(db);
     // Aspas duplicadas; apóstrofo na frente de = + - @ e tabulação, para a planilha não interpretar o campo como fórmula; sem caracteres de controle.
     const q = v => { let s = String(v ?? '').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, ''); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return `"${s.replace(/"/g, '""')}"`; };
@@ -1120,6 +1335,9 @@ async function route(req, env, url, ctx) {
       String(s.metrics.weekly_avg).replace('.', ','), s.metrics.last_attendance, s.metrics.experience.label, s.metrics.learning.pct,
       s.metrics.next ? (s.metrics.next.kind === 'grau' ? `${s.metrics.next.to_degrees}º grau` : `faixa ${s.metrics.next.to_belt || 'a definir'}`) : '', s.metrics.ready ? 'sim' : 'não']);
     const csv = '﻿' + [head, ...rows].map(r => r.map(q).join(';')).join('\r\n');
+    // Sem escrita no banco: o evento é gravado ANTES de o arquivo sair. Se a gravação falhar, a exportação falha (500) e nenhum
+    // dado é entregue. Garantia: não há exportação entregue sem registro (o registro diz "gerada e liberada", não "recebida").
+    await audit(db, 'students_exported', { actor: me.id, target: ['export', 'alunos.csv'], detail: { linhas: rows.length } }).run();
     return new Response(csv, { headers: { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': 'attachment; filename="alunos.csv"', 'cache-control': 'no-store' } });
   }
 

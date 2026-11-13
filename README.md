@@ -16,7 +16,7 @@ Sistema web para o professor acompanhar os alunos: frequência, chamada, técnic
 - **Sessão:** token aleatório de 256 bits, guardado no banco só como hash SHA-256. Fica em cookie `HttpOnly; Secure; SameSite=Strict`, com validade de 30 dias.
 - **CSRF:** toda escrita exige o cabeçalho `x-tatame`. **Força bruta:** 8 tentativas em 15 minutos por e-mail ou por IP.
 - **Perfis:** o *administrador* gerencia a equipe, os critérios e as exclusões; o *professor* faz o dia a dia. A regra vale no servidor (`tests/permissions.mjs` confere toda rota):
-  - Professor: chamada (criar), alunos (cadastrar, editar dados), avaliar técnicas, graduar, horários (criar, editar). Edita e exclui chamada e desfaz graduação só do que ele mesmo registrou há menos de 7 dias (autoria e data vêm do banco). Toda edição e exclusão de chamada fica em `audit_log` com o estado anterior.
+  - Professor: chamada (criar), alunos (cadastrar, editar dados), avaliar técnicas, graduar, horários (criar, editar). Edita e exclui chamada e desfaz graduação só do que ele mesmo registrou há menos de 7 dias (autoria e data vêm do banco). Toda edição e exclusão de chamada fica em `audit_log` com o estado anterior; as demais ações administrativas também são auditadas (`docs/auditoria.md`).
   - Só administrador: excluir aluno e horário; editar ou excluir chamadas de outros ou com 7 dias ou mais; corrigir datas de faixa/grau e aulas anteriores ao sistema; catálogo de técnicas; exportar CSV; critérios; nome da academia; equipe.
 - **Força bruta:** 8 tentativas em 15 minutos por par (e-mail, IP) e 30 por IP. O tempo de resposta é o mesmo para e-mail inexistente.
 - **Sessão:** renova sozinha quando faltam menos de 15 dias, até o teto de 90 dias desde o login.

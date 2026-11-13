@@ -93,7 +93,7 @@ Não reproduzidos ou parcialmente resolvidos: nenhum. Dependem de ambiente real:
 
 ## Pendências da Etapa 0
 
-1. **Trilha de auditoria (0.7):** a tabela `audit_log` já existe (migração 001) e registra a recuperação de senha; falta registrar as demais ações sensíveis.
+1. **Trilha de auditoria (0.7):** a tabela `audit_log` já existe (migração 001) e registra a recuperação de senha; falta registrar as demais ações sensíveis. *(Atualização, Etapa 6.4-C: ações administrativas e operações sensíveis auditadas; ver `docs/auditoria.md`. Retenção ainda pendente.)*
 2. **Documentação de operação e migrações (0.8):** precisa do id do banco D1 e do nome do projeto Pages.
 3. **Implementação de referência para paridade dos cálculos (P.1):** pré-requisito da Etapa 1.
 
