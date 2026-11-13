@@ -15,7 +15,8 @@ desenvolvimento: siga os passos na ordem e não pule as verificações.
 | `db/migrations/000_base.sql` | Schema histórico do commit `17f1fbd`, o formato em que a produção foi criada. |
 | `db/migrations/001_recuperacao_senha.sql` | Tabelas `password_resets` e `audit_log`. |
 | `db/migrations/002_marcador_de_chamada.sql` | Coluna `lessons.roll_called` + preenchimento só onde há presença. |
-| `db/rollbacks/*.down.sql` | Reversões testadas de 001 e 002. **Não** ficam em `db/migrations/` (o wrangler aplicaria todo `.sql` da pasta). |
+| `db/migrations/003_auditoria_e_ultimo_admin.sql` | Colunas `actor_id`, `target_type`, `target_id`, `outcome` em `audit_log` (anuláveis, sem preenchimento retroativo) e gatilho `staff_keep_active_admin`, que aborta qualquer `UPDATE` que deixaria o banco sem administrador ativo (mensagem `ultimo_admin_ativo`). |
+| `db/rollbacks/*.down.sql` | Reversões testadas de 001, 002 e 003 (a da 003 remove o gatilho e as 4 colunas com `DROP COLUMN`, sem recriar a tabela nem apagar registros). Reverter na ordem inversa: 003, depois 002, depois 001. **Não** ficam em `db/migrations/` (o wrangler aplicaria todo `.sql` da pasta). |
 | `db/environments.json` | Ambientes: `local`, `staging`, `restore-test`, `production`. Nome e `database_id` de cada banco. Sem segredos. |
 | `db/wrangler.migrations.jsonc` | Configuração do wrangler **só** para migrações/consultas, usada com `-c ... --env <ambiente>`. |
 | `tools/db.mjs` | Wrapper de todas as operações (abaixo). |
@@ -98,7 +99,7 @@ node tools/db.mjs <operação> --env <ambiente> [opções]
 | `key-verify-copy` | offline | Confere se a cópia de segurança da chave (`--copy`) é idêntica à configurada. |
 | `temp-clean` | offline | Lista áreas temporárias deixadas por operações interrompidas; `--remove` apaga só as comprovadamente abandonadas (7.6). |
 
-Fora do wrapper: `node tools/db-synthetic.mjs [--sem-002]` grava um backup **sintético** criptografado para o ensaio
+Fora do wrapper: `node tools/db-synthetic.mjs [--sem-002]` (com `--sem-002`, só 000 e 001) grava um backup **sintético** criptografado para o ensaio
 (`docs/validacao-d1.md`).
 
 ## 5. Linha de base da produção (uma vez, antes da primeira migração)
@@ -116,7 +117,7 @@ preciso **provar** que o schema real é o de `17f1fbd` e só então registrar `0
 | `contem_alteracoes_posteriores` | Já existem `password_resets`, `audit_log` ou `roll_called`, sem registro | **Pare.** Alguém aplicou migração à mão. Decisão humana: descobrir o que foi aplicado e registrar manualmente só o que for comprovado. |
 | `divergente` | Colunas, tabelas, índices ou CHECKs diferentes | **Pare.** As diferenças são listadas. Pode ser banco criado de outra versão. Vira uma migração corretiva, revisada. |
 | `ja_registrada` | Já existe `d1_migrations` com registros | Não há linha de base a fazer; use `check`. |
-| `banco_vazio` | Sem tabelas | Use `migrate`, que aplica 000, 001 e 002. |
+| `banco_vazio` | Sem tabelas | Use `migrate`, que aplica todas as migrações desde a 000. |
 
 Também é possível gerar o relatório offline: salve a saída de
 `wrangler d1 execute <NOME> --remote --json --command "SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE sql IS NOT NULL ORDER BY type, name"`

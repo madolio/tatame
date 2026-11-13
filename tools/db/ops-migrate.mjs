@@ -48,7 +48,7 @@ export function applyLocal(src, pending, out) {
 function precheck(state, integrity) {
   const files = migrationFiles();
   if (!state.applied.length && state.userTables) throw new GuardError('Banco com tabelas e sem registro de migrações: rode `baseline` e, se idêntico, `baseline-register` antes de migrar. Nada foi aplicado.');
-  if (!state.applied.length) return { pending: files, report: null }; // banco vazio: aplica 000, 001, 002
+  if (!state.applied.length) return { pending: files, report: null }; // banco vazio: aplica todas, desde a 000
   const rep = checkReport(state, integrity);
   if (!rep.ok) throw new GuardError(`Verificação prévia falhou, nada foi aplicado: ${rep.problems.join('; ')}${rep.differences.length ? '\n' + rep.differences.map(d => '  - ' + describeDiff(d)).join('\n') : ''}`);
   return { pending: rep.pending, report: rep };

@@ -48,7 +48,69 @@ DB.load(root + 'db/rollbacks/002_marcador_de_chamada.down.sql');
 ok(!cols().includes('roll_called') && DB.raw.prepare('SELECT count(*) n FROM lessons').get().n === 2, 'reversão remove a coluna e preserva as aulas');
 ok(fresh.raw.prepare("PRAGMA table_info('lessons')").all().some(r => r.name === 'roll_called'), 'schema.sql novo já inclui a coluna');
 
-// ---------- Cadeia 000 + 001 + 002 = db/schema.sql ----------
+// ---------- Migração 003: auditoria estruturada e trava do último admin ----------
+console.log('\n-- 003 auditoria estruturada e último admin --');
+{
+  const M3 = root + 'db/migrations/003_auditoria_e_ultimo_admin.sql', R3 = root + 'db/rollbacks/003_auditoria_e_ultimo_admin.down.sql';
+  const old = makeD1();
+  for (const f of ['000_base.sql', '001_recuperacao_senha.sql', '002_marcador_de_chamada.sql']) old.load(root + 'db/migrations/' + f);
+  const r = old.raw, q = (s, ...p) => r.prepare(s).all(...p);
+  const acols = () => q("PRAGMA table_info('audit_log')").map(c => c.name);
+  const trig = () => q("SELECT name FROM sqlite_master WHERE type = 'trigger'").map(t => t.name);
+  const NEW = ['actor_id', 'target_type', 'target_id', 'outcome'];
+  const fails = sql => { try { r.exec(sql); return null; } catch (e) { return String(e.message); } };
+  ok(!NEW.some(c => acols().includes(c)) && !trig().length, 'banco no formato 002: sem as colunas novas e sem trigger');
+  r.exec(`INSERT INTO staff (id, name, email, pass_hash, pass_salt, role) VALUES ('adm1', 'Admin Um', 'a1@x.test', 'h', 's', 'admin'), ('prof', 'Prof', 'p@x.test', 'h', 's', 'professor');
+    INSERT INTO audit_log (at, event, staff_id, detail) VALUES ('2026-01-01T00:00:00.000Z', 'login_ok', 'adm1', '{"rede":"203.0.113.1"}'),
+      ('2026-01-02T00:00:00.000Z', 'staff_password_reset', 'adm1', '{"conta":"prof"}'), ('2026-01-03T00:00:00.000Z', 'reset_failed', NULL, NULL);`);
+  const before = JSON.stringify(q('SELECT id, at, event, staff_id, detail FROM audit_log ORDER BY id'));
+  old.load(M3);
+  ok(NEW.every(c => acols().includes(c)) && q("PRAGMA table_info('audit_log')").filter(c => NEW.includes(c.name)).every(c => !c.notnull && c.dflt_value === null), 'migração cria actor_id, target_type, target_id e outcome, todas anuláveis e sem default');
+  ok(acols().slice(0, 5).join() === 'id,at,event,staff_id,detail', 'colunas antigas preservadas (staff_id continua)');
+  ok(JSON.stringify(q('SELECT id, at, event, staff_id, detail FROM audit_log ORDER BY id')) === before && q('SELECT count(*) n FROM audit_log WHERE actor_id IS NOT NULL OR target_type IS NOT NULL OR target_id IS NOT NULL OR outcome IS NOT NULL')[0].n === 0, 'registros antigos intactos e sem preenchimento retroativo');
+  r.exec("INSERT INTO audit_log (event, staff_id, detail, actor_id, target_type, target_id, outcome) VALUES ('staff_role_changed', NULL, '{}', 'adm1', 'staff', 'prof', 'ok')");
+  ok(q("SELECT actor_id, target_type, target_id, outcome FROM audit_log WHERE event = 'staff_role_changed'")[0].outcome === 'ok', 'registro novo usa os campos estruturados');
+  ok(fails("INSERT INTO audit_log (event, target_type) VALUES ('x', 'senha')") && fails("INSERT INTO audit_log (event, outcome) VALUES ('x', 'talvez')"), 'target_type e outcome só aceitam os valores previstos (ou NULL)');
+  ok(['staff', 'student', 'lesson', 'promotion', 'class', 'technique', 'rules', 'settings', 'export'].every(t => !fails(`INSERT INTO audit_log (event, target_type, outcome) VALUES ('t', '${t}', 'denied')`)) && !fails("INSERT INTO audit_log (event, outcome) VALUES ('t', 'limit')"), 'todos os target_type e outcome previstos são aceitos');
+  r.exec("DELETE FROM audit_log WHERE event = 't'");
+  const snap = () => JSON.stringify([q('SELECT * FROM audit_log ORDER BY id'), q("SELECT sql FROM sqlite_master WHERE name IN ('audit_log', 'staff_keep_active_admin')")]);
+  const s0 = snap();
+  let again = null; try { old.load(M3); } catch (e) { again = String(e.message); }
+  ok(/duplicate column/.test(again || '') && snap() === s0, 'segunda execução é recusada pelo SQLite (duplicate column) sem mudar nada (aplicar uma vez só, como a 002)');
+
+  // ----- trigger -----
+  const admins = () => q("SELECT count(*) n FROM staff WHERE role = 'admin' AND active = 1")[0].n;
+  const e1 = fails("UPDATE staff SET active = 0 WHERE id = 'adm1'"), e2 = fails("UPDATE staff SET role = 'professor' WHERE id = 'adm1'");
+  ok(/ultimo_admin_ativo/.test(e1 || '') && /ultimo_admin_ativo/.test(e2 || '') && admins() === 1, 'SQL direto: desativar ou rebaixar o único admin ativo é abortado pelo banco');
+  ok(!/a1@x\.test|adm1|Admin Um/.test(e1 + e2), 'a mensagem do trigger não expõe dados da conta');
+  ok(!fails("UPDATE staff SET role = 'professor', active = 0 WHERE id = 'adm1' AND 0") && !fails("UPDATE staff SET name = 'Admin Renomeado', belt = 'preta', pass_hash = 'h2' WHERE id = 'adm1'") && !fails("UPDATE staff SET role = 'admin', active = 1 WHERE id = 'adm1'"), 'último admin: nome, faixa, senha e reafirmar admin ativo continuam permitidos');
+  ok(!fails("UPDATE staff SET active = 0 WHERE id = 'prof'") && !fails("UPDATE staff SET active = 1 WHERE id = 'prof'"), 'professores: desativar e reativar não são afetados');
+  ok(!fails("INSERT INTO staff (id, name, email, pass_hash, pass_salt, role) VALUES ('adm2', 'Admin Dois', 'a2@x.test', 'h', 's', 'admin')") && admins() === 2, 'criar outro administrador é permitido');
+  ok(!fails("UPDATE staff SET role = 'professor' WHERE id = 'adm2'") && admins() === 1, 'com outro admin ativo, rebaixar é permitido');
+  r.exec("UPDATE staff SET role = 'admin' WHERE id = 'adm2'");
+  ok(!fails("UPDATE staff SET active = 0 WHERE id = 'adm1'") && admins() === 1, 'com outro admin ativo, desativar é permitido');
+  ok(/ultimo_admin_ativo/.test(fails("UPDATE staff SET active = 0 WHERE id = 'adm2'") || '') && admins() === 1, 'agora o restante é o último: desativá-lo é abortado');
+  r.exec("UPDATE staff SET active = 1 WHERE id = 'adm1'");
+  ok(/ultimo_admin_ativo/.test(fails("UPDATE staff SET role = 'professor' WHERE role = 'admin'") || '') && admins() === 2, 'rebaixar TODOS os admins num só comando: abortado inteiro (nenhuma linha muda)');
+  ok(/ultimo_admin_ativo/.test(fails("BEGIN; UPDATE staff SET active = 0 WHERE id = 'adm1'; UPDATE staff SET active = 0 WHERE id = 'adm2'; COMMIT;") || '') && (r.exec('ROLLBACK'), admins() === 2), 'dois comandos na mesma transação: o segundo é abortado; com rollback, nada muda');
+  const empty = makeD1(); empty.load(root + 'db/schema.sql');
+  empty.raw.exec("INSERT INTO staff (id, name, email, pass_hash, pass_salt, role) VALUES ('first', 'Primeiro Admin', 'f@x.test', 'h', 's', 'admin')");
+  ok(empty.raw.prepare("SELECT count(*) n FROM staff WHERE role = 'admin' AND active = 1").get().n === 1, 'criar o primeiro administrador num banco vazio é permitido (sem trava de INSERT)');
+
+  // ----- reversão -----
+  const kept = JSON.stringify(q('SELECT id, at, event, staff_id, detail FROM audit_log ORDER BY id'));
+  const nAudit = q('SELECT count(*) n FROM audit_log')[0].n;
+  old.load(R3);
+  ok(!trig().length, 'reversão remove o trigger');
+  ok(acols().join() === 'id,at,event,staff_id,detail', 'reversão remove só as 4 colunas novas');
+  ok(JSON.stringify(q('SELECT id, at, event, staff_id, detail FROM audit_log ORDER BY id')) === kept && q('SELECT count(*) n FROM audit_log')[0].n === nAudit, 'reversão não apaga nem altera registros de auditoria');
+  ok(!fails("UPDATE staff SET role = 'professor' WHERE id = 'adm2'") && !fails("UPDATE staff SET active = 0 WHERE id = 'adm1'"), 'sem o trigger, o banco volta a aceitar (comportamento anterior à 003)');
+  r.exec("UPDATE staff SET active = 1 WHERE id = 'adm1'");
+  old.load(M3);
+  ok(NEW.every(c => acols().includes(c)) && trig().join() === 'staff_keep_active_admin' && /ultimo_admin_ativo/.test(fails("UPDATE staff SET active = 0 WHERE id = 'adm1'") || ''), 'a migração pode ser reaplicada depois da reversão (colunas e trava de volta)');
+}
+
+// ---------- Cadeia 000 + 001 + 002 + 003 = db/schema.sql ----------
 console.log('\n-- cadeia de migrações --');
 {
   const fs = await import('node:fs');
@@ -65,6 +127,7 @@ console.log('\n-- cadeia de migrações --');
       };
     }
     out.$seed = { rules: q('SELECT * FROM rules ORDER BY belt'), settings: q('SELECT * FROM settings ORDER BY key') };
+    out.$triggers = q("SELECT name, tbl_name, sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name").map(x => ({ ...x, sql: x.sql.replace(/s+/g, ' ').trim() }));
     return out;
   };
   const chain = makeD1();
@@ -73,7 +136,8 @@ console.log('\n-- cadeia de migrações --');
   const a = shape(chain), b = shape(ref);
   ok(JSON.stringify(Object.keys(a).sort()) === JSON.stringify(Object.keys(b).sort()), `cadeia e schema.sql têm as mesmas tabelas (${Object.keys(b).length - 1})`);
   for (const t of Object.keys(b)) assert.deepStrictEqual(a[t], b[t], 'diferença na tabela ' + t);
-  ok(true, 'cadeia 000+001+002 é idêntica a db/schema.sql (colunas, tipos, NOT NULL, defaults, CHECK, FKs, índices, dados-semente)');
+  ok(a.$triggers.length === 1, 'cadeia e schema.sql têm o mesmo trigger (staff_keep_active_admin, texto idêntico)');
+  ok(true, 'cadeia 000..003 é idêntica a db/schema.sql (colunas, tipos, NOT NULL, defaults, CHECK, FKs, índices, triggers, dados-semente)');
   ok(fs.readdirSync(root + 'db/migrations').every(f => !f.includes('.down.')), 'nenhum arquivo de reversão em db/migrations/');
   const base = makeD1(); base.load(root + 'db/migrations/000_base.sql');
   const hist = makeD1(); hist.raw.exec((await import('node:child_process')).execSync('git show 17f1fbd:db/schema.sql', { cwd: root, encoding: 'utf8' }));

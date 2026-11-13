@@ -80,7 +80,7 @@ try {
   const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date());
   const world = await openWorld(today); await buildManual(world); unfreezeClock();
   const raw = world.DB.raw;
-  raw.exec("CREATE TABLE IF NOT EXISTS d1_migrations(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL); INSERT INTO d1_migrations (name) VALUES ('000_base.sql'), ('001_recuperacao_senha.sql'), ('002_marcador_de_chamada.sql')");
+  raw.exec("CREATE TABLE IF NOT EXISTS d1_migrations(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL); INSERT INTO d1_migrations (name) VALUES ('000_base.sql'), ('001_recuperacao_senha.sql'), ('002_marcador_de_chamada.sql'), ('003_auditoria_e_ultimo_admin.sql')");
   const text = dumpSql(raw);
   const manifest = buildManifest(text, { source_env: 'staging', source_database: 'tatame-staging', wrangler: '4.155.0', anonymized: true, created_at: '2026-11-11T09:00:00.000Z' });
   const legacyBox = L.encrypt(Buffer.from(text, 'utf8'), manifest, kgen);   // gravado pelo formato/código da 5.1

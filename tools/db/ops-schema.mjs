@@ -26,7 +26,7 @@ export function baselineReport(state) {
   const later = ['password_resets', 'audit_log'].filter(t => actual.tables[t]).concat(actual.tables.lessons?.columns.some(c => c.name === 'roll_called') ? ['lessons.roll_called'] : []);
   let verdict, message;
   if (state.applied.length) { verdict = 'ja_registrada'; message = `O banco já tem migrações registradas (${state.applied.join(', ')}). Não há linha de base a registrar.`; }
-  else if (!state.userTables) { verdict = 'banco_vazio'; message = 'Banco vazio: não precisa de linha de base; use migrate, que aplica 000, 001 e 002.'; }
+  else if (!state.userTables) { verdict = 'banco_vazio'; message = 'Banco vazio: não precisa de linha de base; use migrate, que aplica todas as migrações desde a 000.'; }
   else if (!diffs.length) { verdict = 'identica'; message = 'Schema idêntico ao de 17f1fbd (000_base.sql). A linha de base PODE ser registrada com baseline-register.'; }
   else if (later.length) { verdict = 'contem_alteracoes_posteriores'; message = `O banco já contém estruturas de migrações posteriores sem registro (${later.join(', ')}). Alguém aplicou à mão. PARE: decisão humana necessária.`; }
   else { verdict = 'divergente'; message = 'O schema real difere do de 17f1fbd. PARE: não registre a linha de base; analise as diferenças.'; }
@@ -94,7 +94,7 @@ registerOp('baseline-register', async ctx => {
     src.exec(`${MIGRATIONS_TABLE_DDL}\nINSERT INTO "${MIGRATIONS_TABLE}" (name) values ('${BASE}');`);
     const after = readState(src);
     if (after.applied.join() !== BASE) throw new Error(`Registro inesperado depois da gravação: ${after.applied.join(', ')}`);
-    ctx.deps.out(`[baseline] registrada: ${BASE}. Próximo passo: migrate (aplica 001 e 002).`);
+    ctx.deps.out(`[baseline] registrada: ${BASE}. Próximo passo: migrate (aplica as pendentes).`);
     return 0;
   } finally { src.close(); }
 });

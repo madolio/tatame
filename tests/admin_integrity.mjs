@@ -57,6 +57,7 @@ const get = (w, id) => w.row('SELECT id, name, role, belt, active, pass_hash FRO
 
 // ================= integridade básica =================
 { const w = world(); const s = await boot(w, { second: false });
+  ok(w.row("SELECT count(*) n FROM sqlite_master WHERE type = 'trigger' AND name = 'staff_keep_active_admin'").n === 1, 'banco dos testes tem a trava da migração 003: a API da 6.4-A funciona com ela ativa');
   const before = JSON.stringify(w.staff());
   const r1 = await put(w, s.a1, s.A1, { name: 'Dono Da Silva', role: 'professor' });
   const r2 = await put(w, s.a1, s.A1, { name: 'Dono Da Silva', active: 0 });

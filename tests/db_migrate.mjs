@@ -34,10 +34,10 @@ try {
   // ---------- local: banco vazio ----------
   const empty = join(tmp, 'vazio.db');
   let h = await runLocal('migrate', '--env', 'local', '--sqlite', empty);
-  ok(h.code === 0 && applied(empty).join() === migrationFiles().join(), 'banco vazio: aplica e registra 000, 001 e 002');
+  ok(h.code === 0 && applied(empty).join() === migrationFiles().join(), 'banco vazio: aplica e registra 000 a 003');
   ok(q(empty, "PRAGMA table_info('lessons')").some(c => c.name === 'roll_called') && q(empty, 'SELECT count(*) n FROM rules')[0].n > 0, 'banco vazio migrado tem o schema final e os dados-semente');
   h = await runLocal('migrate', '--env', 'local', '--sqlite', empty);
-  ok(h.code === 0 && /nenhuma migração pendente/.test(h.out.join('\n')) && applied(empty).length === 3, 'segunda execução: nada pendente, nada reaplicado');
+  ok(h.code === 0 && /nenhuma migração pendente/.test(h.out.join('\n')) && applied(empty).length === migrationFiles().length, 'segunda execução: nada pendente, nada reaplicado');
 
   // ---------- local: produção simulada (base registrada) ----------
   const prod = make('prod', sqlOf('000_base.sql'), "INSERT INTO students (id, name, start_date, belt_since, degree_since) VALUES ('s1','Aluno','2026-01-01','2026-01-01','2026-01-01')", "INSERT INTO lessons (id, date, start_time, end_time) VALUES ('l1','2026-02-01','19:00','20:00'),('l2','2026-02-02','19:00','20:00')", "INSERT INTO attendance (lesson_id, student_id) VALUES ('l1','s1')");
@@ -45,7 +45,7 @@ try {
   ok(h.code === 3 && /baseline-register/.test(h.err.join('\n')) && !q(prod, "SELECT name FROM sqlite_schema WHERE name='d1_migrations'").length, 'banco com dados e sem linha de base: recusa e não cria nada');
   register(prod, '000_base.sql');
   h = await runLocal('migrate', '--env', 'local', '--sqlite', prod);
-  ok(h.code === 0 && applied(prod).join() === migrationFiles().join(), 'base registrada: aplica só 001 e 002');
+  ok(h.code === 0 && applied(prod).join() === migrationFiles().join(), 'base registrada: aplica só 001 a 003');
   ok(q(prod, "SELECT roll_called r FROM lessons ORDER BY id").map(r => r.r).join() === '1,', 'backfill da 002 preservado (aula com presença = 1, sem presença = NULL)');
   ok(q(prod, 'SELECT count(*) n FROM students')[0].n === 1 && q(prod, 'SELECT count(*) n FROM attendance')[0].n === 1, 'dados preservados');
 
@@ -75,9 +75,9 @@ try {
 
   // ---------- reversões ainda funcionam a partir de db/rollbacks/ ----------
   const rb = make('rb', ...migrationFiles().map(sqlOf));
-  { const db = new DatabaseSync(rb); db.exec(readFileSync(ROOT + 'db/rollbacks/002_marcador_de_chamada.down.sql', 'utf8')); db.exec(readFileSync(ROOT + 'db/rollbacks/001_recuperacao_senha.down.sql', 'utf8')); db.close(); }
+  { const db = new DatabaseSync(rb); db.exec(readFileSync(ROOT + 'db/rollbacks/003_auditoria_e_ultimo_admin.down.sql', 'utf8')); db.exec(readFileSync(ROOT + 'db/rollbacks/002_marcador_de_chamada.down.sql', 'utf8')); db.exec(readFileSync(ROOT + 'db/rollbacks/001_recuperacao_senha.down.sql', 'utf8')); db.close(); }
   h = await runLocal('baseline', '--env', 'local', '--sqlite', rb);
-  ok(/veredito: identica/.test(h.out.join('\n')), 'aplicar os dois rollbacks volta exatamente ao schema de 000_base (17f1fbd)');
+  ok(/veredito: identica/.test(h.out.join('\n')), 'aplicar os rollbacks 003, 002 e 001 volta exatamente ao schema de 000_base (17f1fbd)');
 
   // ---------- remoto simulado ----------
   const ID = '11111111-1111-4111-8111-111111111111';

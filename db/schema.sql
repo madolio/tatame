@@ -17,6 +17,15 @@ CREATE TABLE IF NOT EXISTS staff (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
+-- migração 003: nenhuma atualização pode deixar o banco sem administrador ativo (segunda camada do V8).
+CREATE TRIGGER IF NOT EXISTS staff_keep_active_admin BEFORE UPDATE OF role, active ON staff
+FOR EACH ROW
+WHEN OLD.role = 'admin' AND OLD.active = 1 AND NOT (NEW.role = 'admin' AND NEW.active = 1)
+  AND NOT EXISTS (SELECT 1 FROM staff WHERE role = 'admin' AND active = 1 AND id <> OLD.id)
+BEGIN
+  SELECT RAISE(ABORT, 'ultimo_admin_ativo');
+END;
+
 CREATE TABLE IF NOT EXISTS auth_sessions (
   token_hash TEXT PRIMARY KEY,
   staff_id TEXT NOT NULL REFERENCES staff (id) ON DELETE CASCADE,
@@ -48,7 +57,12 @@ CREATE TABLE IF NOT EXISTS audit_log (
   at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   event TEXT NOT NULL,
   staff_id TEXT,
-  detail TEXT
+  detail TEXT,
+  -- migração 003: auditoria estruturada (anuláveis; registros antigos ficam NULL)
+  actor_id TEXT,
+  target_type TEXT CHECK (target_type IS NULL OR target_type IN ('staff', 'student', 'lesson', 'promotion', 'class', 'technique', 'rules', 'settings', 'export')),
+  target_id TEXT,
+  outcome TEXT CHECK (outcome IS NULL OR outcome IN ('ok', 'denied', 'limit'))
 );
 CREATE INDEX IF NOT EXISTS audit_log_at ON audit_log (at);
 

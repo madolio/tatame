@@ -31,7 +31,7 @@ export const RULES = {
   auth_sessions: { drop: true },
   login_attempts: { drop: true },
   password_resets: { drop: true },
-  audit_log: { columns: { id: 'keep', at: 'keep', event: 'keep', staff_id: 'keep', detail: 'NULL' } },
+  audit_log: { columns: { id: 'keep', at: 'keep', event: 'keep', staff_id: 'keep', detail: 'NULL', actor_id: 'keep', target_type: 'keep', target_id: 'keep', outcome: 'keep' } },   // 003: ids e domínios fechados, sem dado pessoal
   settings: { columns: { key: 'keep', value: "CASE key WHEN 'academy_name' THEN 'Academia de Teste (anonimizada)' ELSE value END" },
     deleteWhere: "key IN ('setup_token', 'setup_token_hash', 'setup_token_expires')", allowedKeys: ['academy_name', 'setup_done', 'setup_token', 'setup_token_hash', 'setup_token_expires'] },
   students: { columns: {

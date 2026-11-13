@@ -18,8 +18,8 @@ const BASE = expectedAfter(['000_base.sql']);
 const FINAL = expectedAfter(migrationFiles());
 
 try {
-  ok(migrationFiles().join() === '000_base.sql,001_recuperacao_senha.sql,002_marcador_de_chamada.sql', 'migrações encontradas em ordem: 000, 001, 002');
-  ok(diffSchemas(FINAL, fpOf(make('schemasql', readFileSync(MIGRATIONS_DIR + '../schema.sql', 'utf8')))).length === 0, 'schema.sql e cadeia 000+001+002 sem diferenças');
+  ok(migrationFiles().join() === '000_base.sql,001_recuperacao_senha.sql,002_marcador_de_chamada.sql,003_auditoria_e_ultimo_admin.sql', 'migrações encontradas em ordem: 000, 001, 002, 003');
+  ok(diffSchemas(FINAL, fpOf(make('schemasql', readFileSync(MIGRATIONS_DIR + '../schema.sql', 'utf8')))).length === 0, 'schema.sql e cadeia 000..003 sem diferenças');
   const base = sqlOf('000_base.sql');
   ok(kinds(BASE, make('igual', base)).length === 0, 'banco igual a 17f1fbd: nenhuma diferença');
 
@@ -70,7 +70,7 @@ try {
 
   // check
   h = await run('check', '--env', 'local', '--sqlite', prodLike);
-  ok(h.code === 0 && /pendentes: 001_recuperacao_senha.sql, 002_marcador_de_chamada.sql/.test(h.out.join('\n')), 'check: base registrada confere e lista 001 e 002 como pendentes');
+  ok(h.code === 0 && /pendentes: 001_recuperacao_senha.sql, 002_marcador_de_chamada.sql, 003_auditoria_e_ultimo_admin.sql/.test(h.out.join('\n')), 'check: base registrada confere e lista 001, 002 e 003 como pendentes');
   const broken = make('broken', base, 'PRAGMA foreign_keys = OFF', "INSERT INTO attendance (lesson_id, student_id) VALUES ('nao-existe', 'nem-este')", sqlOf('../migrations/000_base.sql').slice(0, 0));
   { const db = new DatabaseSync(broken); db.exec(`CREATE TABLE IF NOT EXISTS d1_migrations(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL); INSERT INTO d1_migrations (name) VALUES ('000_base.sql')`); db.close(); }
   h = await run('check', '--env', 'local', '--sqlite', broken);

@@ -34,7 +34,7 @@ try {
   const raw = world.DB.raw;
   raw.exec("UPDATE students SET phone = '11 98877-' || substr(id, 1, 4), email = lower(replace(name, ' ', '.')) || '@sintetico.test', notes = 'observação sintética de ' || name, nickname = 'Apelido ' || name");
   raw.exec("UPDATE lessons SET title = 'Tema sintético ' || date, notes = 'nota da aula ' || date WHERE rowid % 3 = 0");
-  raw.exec("CREATE TABLE IF NOT EXISTS d1_migrations(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL); INSERT INTO d1_migrations (name) VALUES ('000_base.sql'), ('001_recuperacao_senha.sql'), ('002_marcador_de_chamada.sql')");
+  raw.exec("CREATE TABLE IF NOT EXISTS d1_migrations(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL); INSERT INTO d1_migrations (name) VALUES ('000_base.sql'), ('001_recuperacao_senha.sql'), ('002_marcador_de_chamada.sql'), ('003_auditoria_e_ultimo_admin.sql')");
   const text = dumpSql(raw);
   const origCounts = analyze(raw).counts;
   ok(origCounts.students >= 30 && origCounts.attendance > 50 && origCounts.promotions > 0 && origCounts.auth_sessions > 0, `cenário sintético: ${origCounts.students} alunos, ${origCounts.lessons} aulas, ${origCounts.attendance} presenças, ${origCounts.promotions} graduações`);
@@ -63,9 +63,9 @@ try {
   r = await restoreLocal(box, OTHER);
   ok(!r.ok && r.authenticated === false && /Chave incorreta/.test(r.problems[0]), 'restauração com chave errada: nada é aberto');
   { const t = Buffer.from(box); t[t.length - 100] ^= 1; r = await restoreLocal(t, KEY); ok(!r.ok && !r.authenticated && /Autenticação falhou/.test(r.problems[0]), 'restauração de arquivo adulterado: autenticação falha antes de qualquer SQL'); }
-  { const db = loadSql(text); db.exec("ALTER TABLE lessons DROP COLUMN roll_called; DELETE FROM d1_migrations WHERE name = '002_marcador_de_chamada.sql'"); const t2 = dumpSql(db); db.close();
+  { const db = loadSql(text); db.exec(readFileSync(new URL('../db/rollbacks/003_auditoria_e_ultimo_admin.down.sql', import.meta.url), 'utf8')); db.exec("ALTER TABLE lessons DROP COLUMN roll_called; DELETE FROM d1_migrations WHERE name IN ('002_marcador_de_chamada.sql', '003_auditoria_e_ultimo_admin.sql')"); const t2 = dumpSql(db); db.close();
     const rr = await restoreLocal(sealBackup(t2, buildManifest(t2, { source_env: 'production', source_database: 'x', wrangler: 'x' }), KEY), KEY);
-    ok(rr.ok && rr.notes.some(n => /002_marcador_de_chamada/.test(n)), 'backup de antes da 002: autenticado, 002 aplicada na cópia, Worker atual compatível'); }
+    ok(rr.ok && rr.notes.some(n => /002_marcador_de_chamada/.test(n)) && rr.notes.some(n => /003_auditoria_e_ultimo_admin/.test(n)), 'backup de antes da 002: autenticado, 002 e 003 aplicadas na cópia, Worker atual compatível'); }
 
   // ---------- armazenamento ----------
   assert.throws(() => createStorage({}), /não está definido/); ok(true, 'sem TATAME_BACKUP_DIR: recusa gravar');
