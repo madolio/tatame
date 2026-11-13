@@ -327,6 +327,29 @@ await step('agenda: semana, programar aula, conflito de professor, chamada e cor
   assert.ok(await page.evaluate(() => getComputedStyle(document.querySelector('.ag-week')).display === 'grid'), 'agenda: semana em colunas no desktop');
 });
 
+await step('agenda: duplicar, aviso de conflito, filtros e teclado', async () => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.click('.nav a[data-tab=aulas]'); await page.click('[data-act=aulas-tab][data-id=agenda]'); await page.waitForSelector('.ag-strip');
+  await page.click('[data-act=ag-today]'); await page.click('[data-act=ag-view][data-v=semana]');
+  const staff = await page.$$eval('#main', () => S.staff.filter(s => s.active).map(s => s.id));
+  const open = async () => { await page.click('.top [data-act=ag-new]'); await page.waitForSelector('#ag-form'); };
+  await open(); await page.fill('#ag-form [name=title]', 'Modelo dup'); await page.fill('#ag-form [name=date]', ago(-3)); await page.fill('#ag-form [name=start]', '10:00');
+  await page.selectOption('#ag-form [name=instr]', staff[0]); await page.click('#ag-form .btn'); await page.waitForSelector('.ag-item:has-text("Modelo dup")');
+  // aviso antecipado, sem enviar: mesmo professor, horário sobreposto
+  await open(); await page.fill('#ag-form [name=date]', ago(-3)); await page.fill('#ag-form [name=start]', '10:30'); await page.selectOption('#ag-form [name=instr]', staff[0]);
+  await page.waitForSelector('#ag-pre:not([hidden]):has-text("já tem")'); await page.click('[data-act=close-sheet]');
+  // duplicar: cai 7 dias depois e não copia presença
+  await page.click('.ag-item:has-text("Modelo dup")'); await page.click('[data-act=ag-dup]'); await page.waitForSelector('#ag-form');
+  assert.equal(await page.inputValue('#ag-form [name=title]'), 'Modelo dup'); assert.equal(await page.inputValue('#ag-form [name=date]'), ago(-10));
+  await page.click('#ag-form .btn'); assert.match(await toastText(), /Aula duplicada/);
+  // filtro por professor (quando há mais de um na semana), navegação por teclado e ausência do botão de cancelar
+  if (await page.$('[data-ag-filter=fprof]')) { await page.selectOption('[data-ag-filter=fprof]', staff[0]); await page.waitForSelector('[data-act=ag-clear-filter]'); await page.click('[data-act=ag-clear-filter]'); }
+  await page.click('[data-act=ag-today]'); const r0 = await page.textContent('.ag-range b'); await page.click('.ag-range'); await page.keyboard.press('ArrowRight');
+  await page.waitForFunction(r => document.querySelector('.ag-range b').textContent !== r, r0); await page.keyboard.press('t');
+  await page.waitForFunction(r => document.querySelector('.ag-range b').textContent === r, r0);
+  await page.click('.ag-item >> nth=0'); assert.equal(await page.$('[data-act=ag-cancel]'), null, 'cancelar fica oculto até a migração'); await page.click('[data-act=close-sheet]');
+});
+
 await step('desktop', async () => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.click('.nav a[data-tab=painel]'); await page.waitForSelector('#ch-week svg');

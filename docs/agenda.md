@@ -38,3 +38,11 @@ Mudanças no código: rotas `POST /api/lessons/:id/cancel` e `/restore` (com `ow
 - Alunos "da aula": não há matrícula de aluno em turma. A agenda mostra quem costuma vir (2 ou mais presenças nas últimas 8 semanas) e a chamada continua escolhendo alunos ativos.
 - Editar uma aula com chamada pelo formulário reenvia a lista de presentes atual (sem perder ninguém), mas duas pessoas editando a mesma aula ao mesmo tempo: vale a última gravação.
 - `tests/backup.mjs` falha no commit-base `5508ac3` e continua falhando aqui (verificado em extração limpa); não tem relação com a agenda.
+
+## Melhorias de interface (sem migração)
+- Filtros por professor e modalidade, aviso "Próxima/Agora" no dia de hoje, atalhos ← → e T.
+- "Duplicar para outra data": cria uma nova aula (POST existente) sem copiar presença.
+- Aviso antecipado de conflito no formulário (consulta `GET /api/agenda`; o servidor continua sendo quem recusa).
+- Interface de cancelamento/feriado/reposição pronta e desligada (`AG_CAPS.cancel = false` em `web/agenda.js`). Os cartões já mostram
+  `status: 'cancelled'` com `cancel_kind` e `cancel_reason`. Falta: migração 004, rota de servidor com auditoria, e trocar a flag para `true`
+  (o botão "Cancelar" chama a rota que for definida em `ag-cancel`, ainda não escrita).

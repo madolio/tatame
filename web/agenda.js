@@ -3,7 +3,11 @@
    conflito de horário e presença é do servidor (GET /api/agenda, POST/PUT/DELETE /api/lessons). */
 'use strict';
 
-const AG = { view: 'dia', date: null, data: null, key: '', loading: '', error: '', stale: false, items: new Map() };
+// Cancelamento, feriado e reposição precisam de um campo de estado na aula (migração 004, ainda não liberada). A interface já está pronta:
+// com cancel=false nada disso aparece. Quando o servidor passar a enviar { status: 'cancelled', cancel_kind: 'cancel'|'holiday', cancel_reason }
+// nos itens, os cartões já mostram o estado; falta ligar o botão (ver docs/agenda.md).
+const AG_CAPS = { cancel: false };
+const AG = { fprof: '', fmod: '', view: 'dia', date: null, data: null, key: '', loading: '', error: '', stale: false, items: new Map() };
 const agPad = n => String(n).padStart(2, '0');
 const agAdd = (s, n) => { const d = pd(s); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${agPad(d.getMonth() + 1)}-${agPad(d.getDate())}`; };
 const agWeekStart = s => agAdd(s, -((pd(s).getDay() + 6) % 7));            // segunda-feira
@@ -33,6 +37,7 @@ async function agReload(focusDate) {
 
 // Estado visual da aula: programada, em andamento, chamada pendente ou realizada (cancelada depende de uma migração, ver docs/agenda.md).
 function agState(it) {
+  if (it.status === 'cancelled') return { k: 'cancelled', tag: it.cancel_kind === 'holiday' ? 'Feriado' : 'Cancelada', t: it.cancel_reason || '' };
   const done = it.kind === 'lesson' && (it.roll_called === 1 || it.attendees > 0);
   if (done) return { k: 'done', tag: 'Realizada', t: `${it.attendees} presente${it.attendees === 1 ? '' : 's'}` };
   if (it.date > S.today) return { k: 'sched', tag: 'Programada', t: '' };
@@ -43,6 +48,15 @@ function agState(it) {
   return { k: 'pending', tag: 'Chamada pendente', t: `terminou às ${it.end_time}` };
 }
 
+function agNext(arr) {
+  const live = arr.find(it => agState(it).k === 'live');
+  if (live) return `<p class="ag-next"><b>Agora:</b> ${esc(live.name)} até ${live.end_time}</p>`;
+  const nx = arr.filter(it => agState(it).k === 'sched').sort((a, b) => hm(a.start_time) - hm(b.start_time))[0];
+  const late = arr.filter(it => agState(it).k === 'pending').length;
+  const tail = late ? ` · ${late} sem chamada` : '';
+  if (nx) return `<p class="ag-next"><b>Próxima:</b> ${esc(nx.name)} às ${nx.start_time} · em ${dur(hm(nx.start_time) - nowMin())}${tail}</p>`;
+  return late ? `<p class="ag-next">${late} aula${late === 1 ? '' : 's'} de hoje sem chamada.</p>` : '';
+}
 function agCard(it) {
   const st = agState(it), len = hm(it.end_time) - hm(it.start_time);
   const meta = [MOD[it.modality], it.instructor_name && esc(it.instructor_name), dur(len)].filter(Boolean).join(' · ');
@@ -59,7 +73,16 @@ function agendaBody() {
   agLoad(AG.stale);
   const from = agWeekStart(AG.date), days = [...Array(7)].map((_, i) => agAdd(from, i));
   const items = AG.data ? AG.data.items : [];
-  const byDay = d => items.filter(it => it.date === d);
+  const profs = [...new Map(items.filter(it => it.instructor_id).map(it => [it.instructor_id, it.instructor_name])).entries()];
+  const mods = [...new Set(items.map(it => it.modality))];
+  if (AG.fprof && !profs.some(p => p[0] === AG.fprof)) AG.fprof = '';
+  if (AG.fmod && !mods.includes(AG.fmod)) AG.fmod = '';
+  const shown = items.filter(it => (!AG.fprof || it.instructor_id === AG.fprof) && (!AG.fmod || it.modality === AG.fmod));
+  const byDay = d => shown.filter(it => it.date === d);
+  const filters = profs.length > 1 || mods.length > 1 ? `<div class="ag-filters">
+    ${profs.length > 1 ? `<select class="input" data-ag-filter="fprof" aria-label="Filtrar por professor"><option value="">Todos os professores</option>${profs.map(([id, n]) => `<option value="${esc(id)}" ${AG.fprof === id ? 'selected' : ''}>${esc(n || '—')}</option>`).join('')}</select>` : ''}
+    ${mods.length > 1 ? `<select class="input" data-ag-filter="fmod" aria-label="Filtrar por modalidade"><option value="">Todas as modalidades</option>${mods.map(m => `<option value="${m}" ${AG.fmod === m ? 'selected' : ''}>${MOD[m]}</option>`).join('')}</select>` : ''}
+    ${AG.fprof || AG.fmod ? '<button class="btn ghost sm" data-act="ag-clear-filter">Limpar filtros</button>' : ''}</div>` : '';
   const a = pd(days[0]), b = pd(days[6]);
   const range = a.getMonth() === b.getMonth() ? `${a.getDate()} a ${b.getDate()} ${MONTHS[b.getMonth()]}` : `${a.getDate()} ${MONTHS[a.getMonth()]} a ${b.getDate()} ${MONTHS[b.getMonth()]}`;
   const strip = days.map(d => {
@@ -75,6 +98,7 @@ function agendaBody() {
   else if (AG.view === 'dia') {
     const arr = byDay(AG.date);
     content = `<div class="ag-dayhead"><h2>${cap(WD[pd(AG.date).getDay()])}, ${ld(AG.date)}</h2>${AG.date === S.today ? '<span class="ag-today">Hoje</span>' : ''}</div>
+      ${AG.date === S.today ? agNext(arr) : ''}
       ${arr.length ? `<div class="ag-list">${arr.map(agCard).join('')}</div>` : empty(AG.date)}`;
   } else {
     content = `<div class="ag-week">${days.map(d => { const arr = byDay(d);
@@ -87,7 +111,7 @@ function agendaBody() {
       <button class="icon-btn" data-act="ag-nav" data-n="1" aria-label="Próxima semana">${I('right', 18)}</button>
       <button class="btn ghost sm" data-act="ag-today">Hoje</button></div>
       <div class="ag-seg" role="group" aria-label="Visualização"><button data-act="ag-view" data-v="dia" aria-pressed="${AG.view === 'dia'}">Dia</button><button data-act="ag-view" data-v="semana" aria-pressed="${AG.view === 'semana'}">Semana</button></div></div>
-    <div class="ag-strip" role="group" aria-label="Dias da semana">${strip}</div>${content}</div>`;
+    <div class="ag-strip" role="group" aria-label="Dias da semana">${strip}</div>${filters}${content}</div>`;
 }
 
 // ---------- Detalhe da aula ----------
@@ -98,9 +122,13 @@ function agOpen(key) {
   const reg = !lesson || !it.attendees ? (AG.data.regulars[it.class_id] || []).map(stuById).filter(Boolean) : [];
   const done = lesson && (it.roll_called === 1 || it.attendees > 0);
   const acts = [];
-  if (it.date <= S.today) acts.push(lesson ? `<button class="btn" data-act="ag-roll" data-id="${it.id}">${I('check', 15)} ${done ? (own ? 'Corrigir chamada' : 'Ver chamada') : 'Fazer chamada'}</button>`
+  if (it.status === 'cancelled') acts.push(`<p class="muted small" style="margin:0">${esc(it.cancel_reason || 'Esta aula não acontece neste dia.')}</p>`);
+  else if (it.date <= S.today) acts.push(lesson ? `<button class="btn" data-act="ag-roll" data-id="${it.id}">${I('check', 15)} ${done ? (own ? 'Corrigir chamada' : 'Ver chamada') : 'Fazer chamada'}</button>`
     : `<button class="btn" data-act="ag-roll" data-class="${it.class_id}" data-d="${it.date}">${I('check', 15)} Fazer chamada</button>`);
   else acts.push(`<p class="muted small" style="margin:0">A chamada abre no dia da aula.</p>`);
+  if (lesson) acts.push(`<button class="btn ghost" data-act="ag-dup" data-id="${it.id}">${I('plus', 15)} Duplicar para outra data</button>`);
+  if (AG_CAPS.cancel && it.status !== 'cancelled' && !done) acts.push(`<button class="btn danger" data-act="ag-cancel" data-key="${esc(key)}">${I('x', 15)} Cancelar aula ou feriado</button>`);
+  if (AG_CAPS.cancel && it.status === 'cancelled') acts.push(`<button class="btn" data-act="ag-makeup" data-key="${esc(key)}">${I('plus', 15)} Marcar reposição</button>`);
   if (own) acts.push(`<button class="btn ghost" data-act="ag-edit" data-id="${it.id}">${I('edit', 15)} Editar dados</button>`);
   if (own && !done) acts.push(`<button class="btn danger" data-act="ag-remove" data-id="${it.id}">${I('trash', 15)} Remover da agenda</button>`);
   if (!lesson) acts.push(`<button class="btn ghost" data-act="ag-class" data-id="${it.class_id}">${I('clock', 15)} Editar horário fixo</button>`);
@@ -122,25 +150,40 @@ function agOpen(key) {
 }
 
 // ---------- Formulário de aula (programar / editar) ----------
-async function agForm({ id, date, classId } = {}) {
-  let L = null;
+async function agForm({ id, date, classId, dup } = {}) {
+  let L = null, D = null;                                                    // L: aula em edição; D: aula usada de modelo ao duplicar (sem presença)
   if (id) { L = await busy(null, () => api('GET', '/api/lessons/' + id)); if (!L) return; }
+  if (dup) { D = await busy(null, () => api('GET', '/api/lessons/' + dup)); if (!D) return; }
   const c0 = classId ? clsById(classId) : null;
-  const v = L ? { class_id: L.class_id, title: L.title || '', date: L.date, start: L.start_time, len: hm(L.end_time) - hm(L.start_time), instr: L.instructor_id || '', mod: L.modality }
+  const v = D ? { class_id: D.class_id, title: D.title || '', date: agAdd(D.date > S.today ? D.date : S.today, 7), start: D.start_time, len: hm(D.end_time) - hm(D.start_time), instr: D.instructor_id || '', mod: D.modality }
+    : L ? { class_id: L.class_id, title: L.title || '', date: L.date, start: L.start_time, len: hm(L.end_time) - hm(L.start_time), instr: L.instructor_id || '', mod: L.modality }
     : { class_id: c0 ? c0.id : '', title: '', date: date || AG.date || S.today, start: c0 ? c0.start_time : '19:00', len: c0 ? hm(c0.end_time) - hm(c0.start_time) : 60, instr: c0 ? c0.instructor_id || '' : '', mod: c0 ? c0.modality : 'gi' };
   const lens = [...new Set([30, 45, 60, 75, 90, 120, v.len])].filter(n => n > 0).sort((a, b) => a - b);
-  const w = sheet(`${sheetHead(id ? 'Editar aula' : 'Nova aula')}<form id="ag-form" class="form-grid" novalidate>
-    ${id ? '' : `<label class="field full"><span>Turma (opcional)</span><select class="input" name="class_id"><option value="">Aula avulsa ou especial</option>${S.classes.filter(c => c.active).map(c => `<option value="${c.id}" ${c.id === v.class_id ? 'selected' : ''}>${WDS[c.weekday]} ${c.start_time} · ${esc(c.name)}</option>`).join('')}</select></label>`}
+  const w = sheet(`${sheetHead(id ? 'Editar aula' : D ? 'Duplicar aula' : 'Nova aula')}<form id="ag-form" class="form-grid" novalidate>
+    ${id || D ? '' : `<label class="field full"><span>Turma (opcional)</span><select class="input" name="class_id"><option value="">Aula avulsa ou especial</option>${S.classes.filter(c => c.active).map(c => `<option value="${c.id}" ${c.id === v.class_id ? 'selected' : ''}>${WDS[c.weekday]} ${c.start_time} · ${esc(c.name)}</option>`).join('')}</select></label>`}
     <label class="field full"><span>Nome ou tema</span><input class="input" name="title" maxlength="120" value="${esc(v.title)}" placeholder="Ex.: Aulão de passagem, Seminário, Treino aberto" autofocus></label>
     <label class="field"><span>Data</span><input class="input" type="date" name="date" value="${v.date}" required></label>
     <label class="field"><span>Início</span><input class="input" type="time" name="start" value="${v.start}" required></label>
     <label class="field"><span>Duração</span><select class="input" name="len">${lens.map(n => `<option value="${n}" ${n === v.len ? 'selected' : ''}>${dur(n)}</option>`).join('')}</select></label>
     <label class="field"><span>Modalidade</span><select class="input" name="mod">${Object.entries(MOD).map(([k, l]) => `<option value="${k}" ${v.mod === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
     <label class="field full"><span>Professor responsável</span><select class="input" name="instr"><option value="">Quem registrar</option>${S.staff.filter(s => s.active).map(s => `<option value="${s.id}" ${v.instr === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></label>
+    <p class="ag-warn full" id="ag-pre" role="status" hidden></p>
     <div class="err full" id="ag-err" role="alert"></div>
     <button class="btn full">${id ? 'Salvar alterações' : 'Programar aula'}</button></form>`);
   const f = $('#ag-form', w);
-  if (!id) f.class_id.onchange = () => {
+  // Aviso antecipado (o servidor continua decidindo): consulta o dia escolhido e compara professor e horário.
+  let preSeq = 0;
+  const pre = async () => {
+    const seq = ++preSeq, box = $('#ag-pre', w), start = hm(f.start.value), end = start + +f.len.value;
+    box.hidden = true;
+    if (!f.date.value || !f.start.value || !f.instr.value) return;
+    let r; try { r = await api('GET', `/api/agenda?from=${f.date.value}&to=${f.date.value}`); } catch { return; }
+    if (seq !== preSeq) return;
+    const hit = r.items.find(it => it.id !== id && it.instructor_id === f.instr.value && hm(it.start_time) < end && hm(it.end_time) > start);
+    if (hit) { box.innerHTML = `${I('alert', 14)} Este professor já tem ${esc(hit.name)} das ${hit.start_time} às ${hit.end_time}.`; box.hidden = false; }
+  };
+  ['date', 'start', 'len', 'instr'].forEach(n => f[n].addEventListener('change', pre)); pre();
+  if (!id && !D) f.class_id.onchange = () => {
     const c = clsById(f.class_id.value); if (!c) return;
     f.start.value = c.start_time; f.mod.value = c.modality; f.instr.value = c.instructor_id || '';
     const n = hm(c.end_time) - hm(c.start_time); if (![...f.len.options].some(o => +o.value === n)) f.len.add(new Option(dur(n), n)); f.len.value = n;
@@ -151,12 +194,12 @@ async function agForm({ id, date, classId } = {}) {
     if (!x.date) return err.textContent = 'Informe a data.';
     if (!x.start) return err.textContent = 'Informe o horário de início.';
     if (end > 23 * 60 + 59) return err.textContent = 'A aula precisa terminar até 23:59.';
-    const b = { class_id: id ? L.class_id : x.class_id || null, date: x.date, start_time: x.start, end_time: agClock(end), modality: x.mod, title: x.title, instructor_id: x.instr || null,
+    const b = { class_id: id ? L.class_id : D ? D.class_id : x.class_id || null, date: x.date, start_time: x.start, end_time: agClock(end), modality: x.mod, title: x.title, instructor_id: x.instr || null,
       student_ids: L ? L.student_ids : [], technique_ids: L ? L.technique_ids : [], ...(L ? { notes: L.notes, roll_called: L.roll_called === 1 ? true : L.roll_called === 0 ? false : null } : {}) };
     err.textContent = '';
     try {
       await api(id ? 'PUT' : 'POST', id ? '/api/lessons/' + id : '/api/lessons', b);
-      toast(id ? 'Aula atualizada.' : 'Aula programada.', 'success'); closeSheet(); await agReload(x.date);
+      toast(id ? 'Aula atualizada.' : D ? 'Aula duplicada.' : 'Aula programada.', 'success'); closeSheet(); await agReload(x.date);
     } catch (er) { if (er.status !== 401) err.textContent = er.message; }   // 409 de conflito e 403 de permissão vêm do servidor, com o motivo
   };
 }
@@ -170,6 +213,8 @@ Object.assign(ACT, {
   'ag-open': el => { agOpen(el.dataset.key); },
   'ag-new': el => { closeSheet(); agForm({ date: el.dataset.d }); },
   'ag-edit': el => { closeSheet(); agForm({ id: el.dataset.id }); },
+  'ag-dup': el => { closeSheet(); agForm({ dup: el.dataset.id }); },
+  'ag-clear-filter': () => { AG.fprof = AG.fmod = ''; render(); },
   'ag-class': el => { closeSheet(); openClass(el.dataset.id); },
   'ag-roll': el => { closeSheet(); openLesson(el.dataset.id ? { id: el.dataset.id } : { classId: el.dataset.class, date: el.dataset.d }); },
   'ag-remove': async el => {
@@ -182,3 +227,18 @@ setInterval(() => { if (S.loaded && route()[0] === 'aulas' && S.ui.aulasTab === 
 // Toda gravação do app termina em refresh(): a agenda carregada fica velha e é recarregada na próxima tela.
 const agRefresh = refresh;
 refresh = function () { AG.stale = true; return agRefresh.apply(this, arguments); };
+
+// Filtros (selects não passam por data-act) e atalhos: ← → mudam de dia (semana na vista semanal), T volta para hoje.
+document.addEventListener('change', e => {
+  const k = e.target.dataset && e.target.dataset.agFilter; if (!k) return;
+  AG[k] = e.target.value; render();
+  const again = document.querySelector(`[data-ag-filter=${k}]`); if (again) again.focus();
+});
+document.addEventListener('keydown', e => {
+  if (!S.loaded || route()[0] !== 'aulas' || S.ui.aulasTab !== 'agenda' || $('#sheet') || $('#lesson-screen') || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+  const step = AG.view === 'dia' ? 1 : 7;
+  if (e.key === 'ArrowLeft') { AG.date = agAdd(AG.date || S.today, -step); render(); }
+  else if (e.key === 'ArrowRight') { AG.date = agAdd(AG.date || S.today, step); render(); }
+  else if (e.key === 't' || e.key === 'T') { AG.date = S.today; render(); }
+});

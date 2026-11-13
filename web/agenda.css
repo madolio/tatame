@@ -91,3 +91,9 @@
 .ag-detail .btn:not(.ghost):not(.danger), #ag-form .btn, .btn[data-act=ag-new]:not(.ghost) { background: #D91F27; border-color: rgba(255,255,255,.1); }
 #ag-form .btn { height: 44px; font-weight: 700; }
 #ag-form { font-family: 'Schibsted Grotesk', var(--font); }
+/* Filtros, "próxima aula", estado cancelada/feriado (pronto para quando o servidor enviar status) */
+.ag-filters { display: flex; flex-wrap: wrap; gap: 8px; margin: -8px 0 16px; }
+.ag-filters .input { height: 36px; width: auto; min-width: 0; max-width: 100%; font-size: 13px; }
+.ag-next { margin: -4px 0 12px; font-size: 14px; color: var(--text-2); } .ag-next b { color: var(--ag-red-t); }
+.ag-item[data-k=cancelled] { --st: var(--faint); opacity: .7; } .ag-item[data-k=cancelled] .ag-name { text-decoration: line-through; }
+[data-k=cancelled] .ag-pill { color: var(--muted); background: rgba(255,255,255,.06); }
