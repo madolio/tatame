@@ -25,9 +25,25 @@ export function wranglerVersion() {
 //   - WRANGLER_LOG_SANITIZE não é tocado (padrão: sanitiza).
 export const wranglerEnv = (base = process.env) => ({ ...base, WRANGLER_WRITE_LOGS: 'false', WRANGLER_SEND_METRICS: 'false' });
 
+// Última barreira (Etapa 6.5-A), além do portão de cli.mjs: o executor real só roda comandos d1 com UMA das duas
+// configurações do projeto em db/ (a isolada das migrações ou a da consulta de identidade por nome), nunca --local,
+// --persist-to ou --account-id, e nunca create/delete. Sem -c, o wrangler procuraria um wrangler.toml/json por perto e
+// resolveria o banco pelo nome; isso não acontece por este caminho.
+const CONFIGS = [ROOT + 'db/wrangler.migrations.jsonc', ROOT + 'db/wrangler.identity.jsonc'];
+export function assertAllowedCommand(args) {
+  const a = args.map(String);
+  const no = m => { const e = new Error(`Comando bloqueado pelo executor do wrangler: ${m}`); e.name = 'GuardError'; throw e; };
+  if (a[0] !== 'd1') no('só comandos d1.');
+  if (['create', 'delete', 'list'].includes(a[1]) || (a[1] === 'migrations' && a[2] !== 'apply')) no(`d1 ${a[1]} não é executado por esta ferramenta.`);
+  const ci = a.indexOf('-c');
+  if (ci < 0 || !CONFIGS.includes(a[ci + 1]) || a.filter(x => x === '-c' || x === '--config' || x.startsWith('--config=')).length !== 1) no('sem a configuração do projeto (db/wrangler.migrations.jsonc ou db/wrangler.identity.jsonc).');
+  if (a.some(x => ['--local', '--persist-to', '--account-id', '--preview'].includes(x.split('=')[0]))) no('opção não permitida.');
+}
+
 // Executor real: devolve { status, stdout, stderr }. Os testes injetam outro executor no lugar deste.
 // stdout/stderr ficam só em memória: o wrapper não os imprime (exceto mensagens de erro, com literais e URLs omitidos).
 export function runWrangler(args, { input } = {}) {
+  assertAllowedCommand(args);
   wranglerVersion();
   const r = spawnSync(process.execPath, [WRANGLER_JS, ...args], { encoding: 'utf8', input, maxBuffer: 256 * 1024 * 1024, env: wranglerEnv() });
   return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || (r.error ? String(r.error.message) : '') };

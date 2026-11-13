@@ -4,3 +4,5 @@ import './ops-schema.mjs';
 import './ops-migrate.mjs';
 import './backup.mjs';
 import './ops-key.mjs';
+import './ops-remote.mjs';
+import './ops-codes.mjs';

@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { main, ROOT, MIGRATIONS_CONFIG, loadEnvironments } from '../tools/db/ops.mjs';
 import { checkMigrationsConfig, applyLocal } from '../tools/db/ops-migrate.mjs';
 import { MIGRATIONS_DIR, MIGRATIONS_TABLE_DDL, migrationFiles } from '../tools/db/schema.mjs';
+import { PROD, infoReply, migrationsCfg, identityCfg, evidenceDir } from './cf_sim.mjs';
 
 const ok = (c, m) => { assert.ok(c, m); console.log('ok ', m); };
 const tmp = mkdtempSync(join(tmpdir(), 'tatame-migrate-'));
@@ -81,14 +82,16 @@ try {
 
   // ---------- remoto simulado ----------
   const ID = '11111111-1111-4111-8111-111111111111';
-  const envs = { staging: { kind: 'remote', database_name: 'tatame-staging', database_id: ID } };
-  const cfg = JSON.stringify({ name: 'x', env: { staging: { d1_databases: [{ binding: 'DB', database_name: 'tatame-staging', database_id: ID, migrations_dir: 'migrations', migrations_table: 'd1_migrations' }] } } });
+  const envs = { staging: { kind: 'remote', database_name: 'tatame-staging', database_id: ID }, production: PROD };
+  const cfg = migrationsCfg(envs);
+  const acc = { 'tatame-staging': ID, [PROD.database_name]: PROD.database_id };
   const remoteFile = make('remote', sqlOf('000_base.sql')); register(remoteFile, '000_base.sql');
   const calls = [];
   const sim = args => {
     calls.push(args);
+    const info = infoReply(args, { account: acc, cfgEnvs: envs }); if (info) return info;
     const ci = args.indexOf('-c'), ei = args.indexOf('--env');
-    assert.ok(ci > 0 && args[ci + 1] === MIGRATIONS_CONFIG && args[ei + 1] === 'staging' || args[1] === 'time-travel', 'todo comando de banco usa -c db/wrangler.migrations.jsonc --env staging');
+    assert.ok(ci > 0 && args[ci + 1] === MIGRATIONS_CONFIG && args[ei + 1] === 'staging', 'todo comando de banco usa -c db/wrangler.migrations.jsonc --env staging');
     if (args[1] === 'time-travel') return { status: 0, stdout: JSON.stringify({ bookmark: '0000abcd-teste' }) };
     if (args[1] === 'migrations') { const db = new DatabaseSync(remoteFile); try { const done = db.prepare('SELECT name FROM d1_migrations').all().map(r => r.name); applyLocal({ exec: s => db.exec(s) }, migrationFiles().filter(f => !done.includes(f)), () => {}); } finally { db.close(); } return { status: 0, stdout: '' }; }
     const sql = args[args.indexOf('--command') + 1];
@@ -96,7 +99,7 @@ try {
     try { return { status: 0, stdout: JSON.stringify([{ results: /^\s*(SELECT|PRAGMA)/i.test(sql) ? db.prepare(sql).all() : (db.exec(sql), []), success: true, meta: {} }]) }; } finally { db.close(); }
   };
   const out = [], err = [];
-  const rd = { environments: () => envs, migrationsConfigText: () => cfg, wranglerVersion: () => '4.155.0', exec: sim, isTTY: () => false, ask: async () => '', out: m => out.push(m), err: m => err.push(m) };
+  const rd = { environments: () => envs, migrationsConfigText: () => cfg, identityConfigText: identityCfg, env: { TATAME_EVIDENCE_DIR: evidenceDir() }, wranglerVersion: () => '4.155.0', exec: sim, isTTY: () => false, ask: async () => '', out: m => out.push(m), err: m => err.push(m) };
   let code = await main(['migrate', '--env', 'staging'], rd);
   ok(code === 0 && applied(remoteFile).join() === migrationFiles().join(), 'remoto (simulado): aplica pendentes via `wrangler d1 migrations apply` e confere o registro depois');
   ok(/bookmark do Time Travel ANTES da migração: 0000abcd-teste/.test(out.join('\n')), 'remoto: mostra o bookmark do Time Travel antes de aplicar');
@@ -107,7 +110,7 @@ try {
   ok(code === 3 && calls.length === 0, 'configuração isolada com ID diferente de environments.json: recusa sem executar nada');
   // pós-verificação que falha (o "apply" diz sucesso mas não registra): erro, sem reversão automática
   const lying = make('lying', sqlOf('000_base.sql')); register(lying, '000_base.sql');
-  const sim2 = args => args[1] === 'migrations' ? { status: 0, stdout: '' } : (() => { const db = new DatabaseSync(lying); try { const sql = args[args.indexOf('--command') + 1]; return { status: 0, stdout: JSON.stringify(args[1] === 'time-travel' ? { bookmark: 'b' } : [{ results: db.prepare(sql).all(), success: true }]) }; } finally { db.close(); } })();
+  const sim2 = args => infoReply(args, { account: acc, cfgEnvs: envs }) || (args[1] === 'migrations' ? { status: 0, stdout: '' } : (() => { const db = new DatabaseSync(lying); try { const sql = args[args.indexOf('--command') + 1]; return { status: 0, stdout: JSON.stringify(args[1] === 'time-travel' ? { bookmark: 'b' } : [{ results: db.prepare(sql).all(), success: true }]) }; } finally { db.close(); } })());
   const err2 = [];
   code = await main(['migrate', '--env', 'staging'], { ...rd, exec: sim2, err: m => err2.push(m) });
   ok(code === 1 && /Verificação POSTERIOR falhou/.test(err2.join('\n')) && /Não houve reversão automática/.test(err2.join('\n')), 'comando com código 0 mas banco não migrado: a verificação posterior acusa; nada é revertido em silêncio');

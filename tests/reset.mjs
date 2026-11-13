@@ -9,7 +9,9 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { makeD1 } from './d1shim.mjs';
 import { generateCode, buildSetupSql } from '../tools/setup-token.mjs';
-import { generateCode as newCode, buildSql, hashCode, run as resetTool, ResetToolError } from '../tools/reset-code.mjs';
+import { generateCode as newCode, buildSql, hashCode } from '../tools/reset-code.mjs';
+import { main } from '../tools/db/ops.mjs';
+import { simDeps, sqliteRemote } from './cf_sim.mjs';
 
 const W = (await import('../web/_worker.js')).default;
 const SCHEMA = fileURLToPath(new URL('../db/schema.sql', import.meta.url));
@@ -110,38 +112,40 @@ const hashOf = (w, id) => w.row('SELECT pass_hash h FROM staff WHERE id = ?', id
   const b = await reset(w, 'p1@x.test', newCode(), 'qualquer-1234', '198.51.100.91');
   ok(a.status === b.status && a.body.error === b.body.error, 'e-mail inexistente e existente sem código: mesma resposta'); }
 
-// ================= 12. ferramenta manual =================
+// ================= 12. ferramenta manual (operação reset-code do wrapper, Etapa 6.5-A) =================
 { const file = join(tmp, 'op.db'); const w = world(file); w.DB.raw.exec(readFileSync(SCHEMA, 'utf8'));
   const { PROF } = await boot(w);
   const calls = [], written = [];
-  const exec = a => {
-    calls.push(a.join(' ')); const db = new DatabaseSync(file);
-    try {
-      if (a.includes('--command')) return { status: 0, stdout: JSON.stringify([{ results: db.prepare(a[a.indexOf('--command') + 1]).all(), success: true }]) };
-      const sql = readFileSync(a[a.indexOf('--file') + 1], 'utf8'); written.push(sql); db.exec(sql); return { status: 0, stdout: '[]' };
-    } finally { db.close(); }
-  };
-  const out = [];
-  const deps = (o = {}) => ({ exec, ask: async () => 'p1@x.test', isTTY: () => true, out: m => out.push(m), ...o });
-  const refused = async (argv, d, re) => { const n0 = calls.length; try { await resetTool(argv, d); return false; } catch (e) { return e instanceof ResetToolError && re.test(e.message) && (re.source === 'wrangler' || calls.length === n0); } };
-  ok(await refused(['--email', 'p1@x.test', '--db', 'tatame', '--remote'], deps({ isTTY: () => false }), /interativo/), 'ferramenta: sem terminal interativo, recusa ANTES de qualquer comando ao banco');
-  ok(await refused(['--email', 'p1@x.test', '--db', 'tatame', '--remote', 'ABCDE-FGHIJ'], deps(), /desconhecida/), 'ferramenta: argumento extra (ex.: um código) é recusado; o código nunca é argumento');
-  ok(await refused(['--email', "x'@x.test", '--db', 'tatame', '--remote'], deps(), /inválido/) && await refused(['--email', 'p1@x.test', '--db', 'a;b', '--remote'], deps(), /inválido/), 'ferramenta: e-mail e banco inválidos recusados');
-  { const f0 = calls.filter(c => c.includes('--file')).length; let m = ''; try { await resetTool(['--email', 'p1@x.test', '--db', 'tatame', '--remote'], deps({ ask: async () => 'outro@x.test' })); } catch (e) { m = e.message; }
-    ok(/Cancelado/.test(m) && calls.filter(c => c.includes('--file')).length === f0 && !pr(w, PROF), 'ferramenta: e-mail digitado diferente cancela depois de ler a conta, sem nenhuma gravação'); }
+  const exec = sqliteRemote(file, { calls, files: written });
+  const out = [], err = [];
+  const deps = (o = {}) => ({ ...simDeps({ exec, tty: true, answer: 'p1@x.test', out, err }), ...o });
+  const tool = (argv, d = deps()) => main(['reset-code', ...argv], d);
+  const refused = async (argv, d, re) => { const n0 = calls.length; err.length = 0; const code = await tool(argv, d); return code === 3 && re.test(err.join('\n')) && calls.length === n0; };
+  const STG = ['--env', 'staging'];
+  ok(await refused(['--email', 'p1@x.test', ...STG], deps({ isTTY: () => false }), /interativo/), 'ferramenta: sem terminal interativo, recusa ANTES de qualquer comando ao banco');
+  ok(await refused(['--email', 'p1@x.test', ...STG, 'ABCDE-FGHIJ'], deps(), /não reconhecido/), 'ferramenta: argumento extra (ex.: um código) é recusado; o código nunca é argumento');
+  ok(await refused(['--email', "x'@x.test", ...STG], deps(), /inválido/), 'ferramenta: e-mail inválido recusado');
+  ok(await refused(['--email', 'p1@x.test', '--db', 'tatame', '--remote'], deps(), /--db não é aceito/), 'ferramenta: nome livre de banco (--db/--remote) recusado; só --env');
+  ok(await refused(['--email', 'p1@x.test', '--env', 'production', '--confirm-production=tatame-prod-ficticio'], deps(), /só aceita como destino/), 'ferramenta: produção recusada, mesmo com a confirmação de produção');
+  { const f0 = written.length; err.length = 0; const code = await tool(['--email', 'p1@x.test', ...STG], deps({ ask: async () => 'outro@x.test' }));
+    ok(code === 3 && /Cancelado/.test(err.join('\n')) && written.length === f0 && !pr(w, PROF), 'ferramenta: e-mail digitado diferente cancela depois de ler a conta, sem nenhuma gravação'); }
   out.length = 0; const k0 = calls.length;
-  ok(await resetTool(['--email', 'p1@x.test', '--db', 'tatame', '--remote'], deps()) === 0, 'ferramenta: gera o código para conta ativa');
+  ok(await tool(['--email', 'p1@x.test', ...STG]) === 0, 'ferramenta: gera o código para conta ativa (staging, identidade conferida)');
   const shown = out.join('\n').match(/\n {4}([0-9A-Z]{5}(?:-[0-9A-Z]{1,5}){5})\n/)?.[1];
   ok(shown && pr(w, PROF).code_hash === hashCode(PROF, shown), 'o código mostrado é o que ficou gravado (só o hash no banco)');
   ok(calls.every(c => !c.includes(shown) && !c.includes(shown.replace(/-/g, ''))) && written.every(s => !s.includes(shown) && !s.includes(shown.replace(/-/g, ''))), 'o código não aparece nos argumentos do wrangler nem no SQL gravado em arquivo');
-  ok(calls.slice(k0).filter(c => c.includes('--command')).length === 2 && calls.slice(k0).filter(c => c.includes('--file')).length === 1, 'leituras por --command e uma única gravação por --file');
+  const mine = calls.slice(k0).filter(c => !/sqlite_schema|d1_migrations/.test(c));
+  ok(mine.filter(c => c.includes('--command')).length === 2 && mine.filter(c => c.includes('--file')).length === 1 && mine.every(c => c.includes('--env staging')), 'leituras por --command e uma única gravação por --file, todas no ambiente conferido');
   ok((await reset(w, 'p1@x.test', shown, 'pedra-nova-48')).status === 200, 'o código gerado pela ferramenta funciona no Worker');
-  const fail = deps({ exec: a => a.includes('--file') ? { status: 1, stdout: '', stderr: "SEGREDO-DO-STDERR INSERT ... 'hash'" } : exec(a) });
-  let msg = ''; try { await resetTool(['--email', 'p1@x.test', '--db', 'tatame', '--remote'], fail); } catch (e) { msg = e.message; }
-  ok(/wrangler falhou/.test(msg) && !msg.includes('SEGREDO') && !out.join('\n').includes('SEGREDO'), 'falha do wrangler: mensagem sem o conteúdo do stderr e nenhum código mostrado');
-  const swapped = deps({ exec: a => { const r = exec(a); if (a.includes('--file')) { const d = new DatabaseSync(file); d.prepare('UPDATE password_resets SET code_hash = ? WHERE staff_id = ?').run('0'.repeat(64), PROF); d.close(); } return r; } });
-  out.length = 0; let msg2 = ''; try { await resetTool(['--email', 'p1@x.test', '--db', 'tatame', '--remote'], swapped); } catch (e) { msg2 = e.message; }
-  ok(/NÃO foi mostrado/.test(msg2) && !/\n {4}[0-9A-Z]{5}-/.test(out.join('\n')), 'se o hash gravado não confere (emissão concorrente), o código não é mostrado');
+  const failing = sqliteRemote(file, { calls, hook: a => a.includes('--file') ? { status: 1, stdout: '', stderr: "SEGREDO-DO-STDERR INSERT ... 'hash'" } : null });
+  out.length = 0; err.length = 0; let code = await tool(['--email', 'p1@x.test', ...STG], deps({ exec: failing }));
+  ok(code === 3 && /acesso ao banco falhou/.test(err.join('\n')) && !err.join('\n').includes('SEGREDO') && !out.join('\n').includes('SEGREDO') && !/\n {4}[0-9A-Z]{5}-/.test(out.join('\n')), 'falha do wrangler: mensagem sem o conteúdo do stderr e nenhum código mostrado');
+  const swapped = sqliteRemote(file, { calls, hook: a => { if (a.includes('--file')) { const r = sqliteRemote(file)(a); const d = new DatabaseSync(file); d.prepare('UPDATE password_resets SET code_hash = ? WHERE staff_id = ?').run('0'.repeat(64), PROF); d.close(); return r; } return null; } });
+  out.length = 0; err.length = 0; code = await tool(['--email', 'p1@x.test', ...STG], deps({ exec: swapped }));
+  ok(code === 3 && /NÃO foi mostrado/.test(err.join('\n')) && !/\n {4}[0-9A-Z]{5}-/.test(out.join('\n')), 'se o hash gravado não confere (emissão concorrente), o código não é mostrado');
+  // local (SQLite em arquivo, sem wrangler)
+  out.length = 0; const c0 = calls.length;
+  ok(await tool(['--email', 'p1@x.test', '--env', 'local', '--sqlite', file], deps({ exec: () => { throw new Error('não deveria chamar o wrangler'); } })) === 0 && calls.length === c0, 'local (--env local --sqlite): gera o código sem nenhum comando ao wrangler');
   w.DB.raw.close(); }
 
 // ================= 10. nada sensível =================

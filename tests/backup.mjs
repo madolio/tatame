@@ -13,6 +13,7 @@ import { buildManifest, verifyContent, restoreLocal, checkImportAllowed, sealBac
 import { dumpSql, loadSql, analyze } from '../tools/db/dump.mjs';
 import { generateKey, encrypt } from '../tools/backup/crypto.mjs';
 import { validateDir, dirAdapter, createStorage, retentionPlan, StorageError } from '../tools/backup/storage.mjs';
+import { PROD, infoReply, migrationsCfg, identityCfg, evidenceDir } from './cf_sim.mjs';
 
 const ok = (c, m) => { assert.ok(c, m); console.log('ok ', m); };
 const tmp = mkdtempSync(join(tmpdir(), 'tatame-backup-test-'));
@@ -145,10 +146,13 @@ try {
 
   // ---------- import / restore-test pelo wrapper, remoto simulado ----------
   const IDS = { staging: '11111111-1111-4111-8111-111111111111', rt: '22222222-2222-4222-8222-222222222222' };
-  const envs = { staging: { kind: 'remote', database_name: 'tatame-staging', database_id: IDS.staging }, 'restore-test': { kind: 'remote', database_name: 'tatame-restore-test', database_id: IDS.rt } };
+  const envs = { staging: { kind: 'remote', database_name: 'tatame-staging', database_id: IDS.staging }, 'restore-test': { kind: 'remote', database_name: 'tatame-restore-test', database_id: IDS.rt }, production: PROD };
+  const acc = { 'tatame-staging': IDS.staging, 'tatame-restore-test': IDS.rt, [PROD.database_name]: PROD.database_id };
+  const EVD = evidenceDir();
   const remoteDb = { 'tatame-staging': join(tmp, 'remote-staging.db'), 'tatame-restore-test': join(tmp, 'remote-rt.db') };
   const calls = [], importedFiles = [];
   const simExec = args => {
+    const info = infoReply(args, { account: acc, cfgEnvs: envs }); if (info) return info;
     calls.push(args.join(' '));
     assert.ok(args.includes('-c') && args[args.indexOf('-c') + 1] === MIGRATIONS_CONFIG, 'usa a configuração isolada');
     const db = new DatabaseSync(remoteDb[args[2]]);
@@ -162,7 +166,7 @@ try {
     } finally { db.close(); }
   };
   const out = [], err = [];
-  const rdeps = (env = ENV, exec = simExec) => ({ environments: () => envs, wranglerVersion: () => '4.155.0', exec, isTTY: () => false, ask: async () => '', out: m => out.push(m), err: m => err.push(m), env });
+  const rdeps = (env = ENV, exec = simExec) => ({ environments: () => envs, migrationsConfigText: () => migrationsCfg(envs), identityConfigText: identityCfg, wranglerVersion: () => '4.155.0', exec, isTTY: () => false, ask: async () => '', out: m => out.push(m), err: m => err.push(m), env: { TATAME_EVIDENCE_DIR: EVD, ...env } });
   calls.length = 0;
   code = await main(['import', '--env', 'staging', '--backup', id, '--confirm-destination=tatame-staging'], rdeps());
   ok(code === 3 && calls.length === 0, 'import de backup com dados pessoais em staging: recusado sem nenhum comando');

@@ -1,0 +1,9 @@
+// Configuração do wrangler SOMENTE para a conferência de identidade por nome (tools/db/identity.mjs):
+//   d1 info <nome> -c db/wrangler.identity.jsonc --json
+// Sem nenhum banco declarado, o wrangler procura o nome na conta da Cloudflare e devolve o UUID REAL daquele nome.
+// Se este arquivo declarasse um banco, o wrangler devolveria o UUID do arquivo sem consultar a conta, e a conferência
+// perderia o sentido: o wrapper recusa qualquer operação remota se aparecer aqui d1_databases, database_id, env ou
+// pages_build_output_dir. Não é configuração do Cloudflare Pages.
+{
+  "name": "tatame-db-identity"
+}

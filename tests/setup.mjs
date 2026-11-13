@@ -8,7 +8,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { makeD1 } from './d1shim.mjs';
 import { generateCode, setupHash, buildSetupSql } from '../tools/setup-token.mjs';
-import { run as setupTool, SetupToolError } from '../tools/setup-code.mjs';
+import { main } from '../tools/db/ops.mjs';
+import { simDeps, sqliteRemote } from './cf_sim.mjs';
 
 const W = (await import('../web/_worker.js')).default;
 const SCHEMA = fileURLToPath(new URL('../db/schema.sql', import.meta.url));
@@ -128,38 +129,34 @@ try {
   { const DB = fresh(), call = client(DB); const c = generateCode(); DB.raw.exec(`INSERT INTO settings (key, value) VALUES ('setup_token_hash', '${setupHash(c)}'), ('setup_token_expires', '${new Date(Date.now() + 3600e3).toISOString()}')`);
     ok((await call('POST', '/api/setup', form(c.replace(/0/g, 'O').replace(/1/g, 'l')))).status === 201, 'hash do Worker = hash da ferramenta (inclui a normalização O→0, I/L→1)'); }
 
-  // ================= ferramenta do operador (wrangler simulado sobre SQLite) =================
+  // ================= ferramenta do operador: operação setup-code do wrapper (Etapa 6.5-A), D1 simulado sobre SQLite =================
   { const file = join(tmp, 'operador.db');
     const db0 = new DatabaseSync(file); db0.exec(readSchema()); db0.close();
     const calls = [];
-    const exec = args => {
-      calls.push(args.join(' ')); const db = new DatabaseSync(file);
-      try {
-        if (args.includes('--command')) return { status: 0, stdout: JSON.stringify([{ results: db.prepare(args[args.indexOf('--command') + 1]).all(), success: true }]) };
-        db.exec('BEGIN'); try { db.exec(readFileSyncUtf8(args[args.indexOf('--file') + 1])); db.exec('COMMIT'); } catch (e) { db.exec('ROLLBACK'); return { status: 1, stdout: '', stderr: 'falha' }; }
-        return { status: 0, stdout: '[]' };
-      } finally { db.close(); }
-    };
-    const out = [];
-    const deps = (over = {}) => ({ exec, ask: async () => 'tatame-nova', isTTY: () => true, out: m => out.push(m), productionName: () => 'tatame-producao', ...over });
-    const refusedWith = async (argv, d, re) => { try { await setupTool(argv, d); return false; } catch (e) { return e instanceof SetupToolError && re.test(e.message); } };
-    ok(await refusedWith(['--db', 'tatame-producao', '--remote'], deps(), /PRODUÇÃO/), 'ferramenta: banco de produção de db/environments.json recusado');
-    ok(await refusedWith(['--db', 'tatame-nova', '--remote'], deps({ isTTY: () => false }), /interativo/), 'ferramenta: terminal não interativo recusado');
-    ok(await refusedWith(['--db', 'tatame-nova', '--remote'], deps({ ask: async () => 'outro' }), /Cancelado/) && tokenFile(file) === 0, 'ferramenta: nome digitado diferente cancela sem gravar');
-    ok(await refusedWith(['--db', "x'; DROP TABLE staff;--", '--remote'], deps(), /inválido/), 'ferramenta: nome de banco com caracteres inválidos recusado');
-    ok(await refusedWith(['--db', 'tatame-nova', '--remote', '--hours', '999'], deps(), /--hours/), 'ferramenta: validade fora de 1–168 h recusada');
+    const exec = sqliteRemote(file, { calls });
+    const out = [], err = [];
+    const deps = (over = {}) => ({ ...simDeps({ exec, tty: true, answer: 'tatame-staging', out, err }), ...over });
+    const setupTool = (argv, d = deps()) => main(['setup-code', ...argv], d);
+    // recusa sem gravar nada; as que dependem do estado do banco leem antes (só --command), as demais não chamam nada
+    const refusedWith = async (argv, d, re) => { err.length = 0; const n0 = calls.length, w0 = calls.filter(c => c.includes('--file')).length; const c = await setupTool(argv, d); return c === 3 && re.test(err.join('\n')) && calls.filter(c => c.includes('--file')).length === w0 && (/Cancelado|replace|equipe/.test(re.source) || calls.length === n0); };
+    const STG = ['--env', 'staging'];
+    ok(await refusedWith(['--env', 'production', '--confirm-production=tatame-prod-ficticio'], deps(), /só aceita como destino/), 'ferramenta: produção recusada (mesmo com a confirmação de produção)');
+    ok(await refusedWith(['--db', 'tatame-nova', '--remote'], deps(), /--db não é aceito/), 'ferramenta: nome livre de banco (--db/--remote) recusado; só --env');
+    ok(await refusedWith(STG, deps({ isTTY: () => false }), /interativo/), 'ferramenta: terminal não interativo recusado');
+    ok(await refusedWith(STG, deps({ ask: async () => 'outro' }), /Cancelado/) && tokenFile(file) === 0, 'ferramenta: nome digitado diferente cancela sem gravar');
+    ok(await refusedWith([...STG, '--hours', '999'], deps(), /--hours/), 'ferramenta: validade fora de 1–168 h recusada');
     out.length = 0;
-    ok(await setupTool(['--db', 'tatame-nova', '--remote'], deps()) === 0 && tokenFile(file) === 2, 'ferramenta: gera e grava o código numa instalação sem equipe');
+    ok(await setupTool(STG) === 0 && tokenFile(file) === 2, 'ferramenta: gera e grava o código numa instalação sem equipe (staging, identidade conferida)');
     const shown = out.join('\n').match(/\n {4}([0-9A-Z]{5}(?:-[0-9A-Z]{1,5}){5})\n/)?.[1];
     ok(shown && !out.join('\n').includes(setupHash(shown)) && calls.every(c => !c.includes(shown) && !c.includes(shown.replace(/-/g, ''))), 'o código aparece só na tela do operador; não vai nos argumentos do wrangler; o hash não é exibido');
-    ok(await refusedWith(['--db', 'tatame-nova', '--remote'], deps(), /--replace/), 'ferramenta: código já configurado não é sobrescrito sem --replace');
+    ok(await refusedWith(STG, deps(), /--replace/), 'ferramenta: código já configurado não é sobrescrito sem --replace');
     out.length = 0;
-    ok(await setupTool(['--db', 'tatame-nova', '--remote', '--replace'], deps()) === 0, 'ferramenta: --replace (com nova confirmação) troca o código');
+    ok(await setupTool([...STG, '--replace']) === 0, 'ferramenta: --replace (com nova confirmação) troca o código');
     const second = out.join('\n').match(/\n {4}([0-9A-Z]{5}(?:-[0-9A-Z]{1,5}){5})\n/)?.[1];
     const DB = makeD1(file), call = client(DB);
     ok((await call('POST', '/api/setup', form(shown))).status === 403, 'o código anterior deixa de valer depois do --replace');
     ok((await call('POST', '/api/setup', form(second))).status === 201 && tokenFile(file) === 0, 'o código gerado pela ferramenta conclui o setup no Worker');
-    ok(await refusedWith(['--db', 'tatame-nova', '--remote', '--replace'], deps(), /já tem equipe/), 'ferramenta: instalação já configurada recusada, mesmo com --replace'); }
+    ok(await refusedWith([...STG, '--replace'], deps(), /já tem equipe/), 'ferramenta: instalação já configurada recusada, mesmo com --replace'); }
 
   // ================= nada vazou =================
   const all = seen.join('\n') + logs.join('\n');

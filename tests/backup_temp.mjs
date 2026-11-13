@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { workspace, scanResidue, cleanResidue, redact, TempError, MARKER, WORK_PREFIX, activeCount } from '../tools/backup/tempspace.mjs';
 import { loadSql } from '../tools/db/dump.mjs';
 import { main } from '../tools/db/ops.mjs';
+import { simDeps, infoReply } from './cf_sim.mjs';
 
 const ok = (c, m) => { assert.ok(c, m); console.log('ok ', m); };
 const POSIX = process.platform !== 'win32';
@@ -85,8 +86,9 @@ try {
   let msg = ''; try { loadSql(`INSERT INTO nada VALUES ('${SECRET}'); CREATE TABEL x;`); } catch (e) { msg = e.message; }
   ok(msg.includes('não é SQL importável') && !msg.includes('Sigilosa'), 'erro de SQL inválido não reproduz dados');
   const outs = [];
-  const envs = { staging: { kind: 'remote', database_name: 'tatame-staging-teste', database_id: '00000000-0000-4000-8000-000000000000' } };
-  const code = await main(['timetravel-info', '--env', 'staging'], { environments: () => envs, wranglerVersion: () => '4.155.0', exec: () => ({ status: 1, stdout: '', stderr: `✘ ERROR: near "x": syntax error at offset 9: SQLITE_ERROR\nINSERT INTO students VALUES('${SECRET}')` }), isTTY: () => false, ask: async () => '', out: m => outs.push(m), err: m => outs.push(m), env: {} });
+  // identidade conferida (Cloudflare simulada, tests/cf_sim.mjs); o comando da operação falha ecoando SQL
+  const exec = a => infoReply(a) || { status: 1, stdout: '', stderr: `✘ ERROR: near "x": syntax error at offset 9: SQLITE_ERROR\nINSERT INTO students VALUES('${SECRET}')` };
+  const code = await main(['timetravel-info', '--env', 'staging'], simDeps({ exec, out: outs, err: outs }));
   ok(code === 1 && outs.some(o => o.includes('wrangler falhou')) && !outs.join('\n').includes('Sigilosa'), 'saída de erro do wrangler que ecoa SQL: literais omitidos na mensagem');
   const outs2 = [];
   const c2 = await main(['temp-clean'], { environments: () => ({}), wranglerVersion: () => '', exec: () => { throw new Error('não deveria executar'); }, isTTY: () => false, ask: async () => '', out: m => outs2.push(m), err: m => outs2.push(m), env: {} });

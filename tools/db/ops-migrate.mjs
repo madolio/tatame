@@ -3,30 +3,14 @@
 // configuração isolada db/wrangler.migrations.jsonc. Local: mesmo algoritmo do wrangler 4.155.0 (cada migração +
 // INSERT no registro, numa transação). Nunca reverte sozinho: em falha, para e mostra o caminho de recuperação.
 import { readFileSync } from 'node:fs';
-import { registerOp, GuardError, MIGRATIONS_CONFIG } from './cli.mjs';
+import { registerOp, GuardError, configArgs } from './cli.mjs';
 import { openSource, remoteArgs } from './source.mjs';
 import { readState, readIntegrity, checkReport } from './ops-schema.mjs';
 import { MIGRATIONS_DIR, MIGRATIONS_TABLE, MIGRATIONS_TABLE_DDL, migrationFiles, describeDiff } from './schema.mjs';
 
-const stripJsonc = t => t.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
-
-// A configuração isolada precisa espelhar db/environments.json e não pode ser configuração de Pages.
-export function checkMigrationsConfig(envs, text = readFileSync(MIGRATIONS_CONFIG, 'utf8')) {
-  const cfg = JSON.parse(stripJsonc(text));
-  const problems = [];
-  const walk = (o, path) => { if (o && typeof o === 'object') for (const [k, v] of Object.entries(o)) { if (k === 'pages_build_output_dir') problems.push(`chave proibida ${path}${k}`); walk(v, `${path}${k}.`); } };
-  walk(cfg, '');
-  if (cfg.d1_databases) problems.push('d1_databases no nível de cima (sem --env apontaria para um banco)');
-  for (const [name, env] of Object.entries(envs)) {
-    if (name.startsWith('_') || env.kind !== 'remote') continue;
-    const db = cfg.env?.[name]?.d1_databases;
-    if (!Array.isArray(db) || db.length !== 1) { problems.push(`ambiente ${name}: falta exatamente um d1_databases`); continue; }
-    const d = db[0];
-    if (d.database_name !== env.database_name || d.database_id !== env.database_id) problems.push(`ambiente ${name}: nome/ID diferentes de db/environments.json`);
-    if (d.migrations_dir !== 'migrations' || (d.migrations_table ?? MIGRATIONS_TABLE) !== MIGRATIONS_TABLE || d.migrations_pattern) problems.push(`ambiente ${name}: migrations_dir deve ser "migrations" (db/migrations), tabela ${MIGRATIONS_TABLE}, sem migrations_pattern`);
-  }
-  return problems;
-}
+// Coerência entre db/environments.json e a configuração isolada: conferida para TODA operação remota em cli.mjs
+// (identity.mjs). Reexportada aqui por compatibilidade.
+export { checkMigrationsConfig } from './identity.mjs';
 
 // Aplicação local, equivalente ao wrangler: CREATE do registro e, para cada pendente, arquivo + INSERT numa transação.
 export function applyLocal(src, pending, out) {
@@ -56,10 +40,6 @@ function precheck(state, integrity) {
 
 registerOp('migrate', async ctx => {
   const { target, deps } = ctx, out = deps.out;
-  if (target.kind === 'remote') {
-    const problems = checkMigrationsConfig(deps.environments(), deps.migrationsConfigText ? deps.migrationsConfigText() : undefined);
-    if (problems.length) throw new GuardError('db/wrangler.migrations.jsonc inconsistente: ' + problems.join('; '));
-  }
   const src = openSource(ctx, { mustExist: false });
   try {
     if (src.dryRun) {
@@ -72,7 +52,7 @@ registerOp('migrate', async ctx => {
     if (!pending.length) { out('[migrate] nenhuma migração pendente.'); return 0; }
     out(`[migrate] pendentes: ${pending.join(', ')}`);
     if (target.kind === 'remote') {
-      const tt = ctx.wrangler(['d1', 'time-travel', 'info', target.database_name, '--json']);
+      const tt = ctx.wrangler(['d1', 'time-travel', 'info', target.database_name, ...configArgs(target), '--json']);
       let bookmark = null; try { bookmark = JSON.parse(tt.stdout).bookmark ?? null; } catch { /* formato inesperado */ }
       out(`[migrate] bookmark do Time Travel ANTES da migração: ${bookmark || '(não obtido — veja a saída acima)'} — anote-o; é o ponto de recuperação.`);
       ctx.wrangler(['d1', 'migrations', 'apply', target.database_name, ...remoteArgs(target)]);

@@ -15,13 +15,15 @@ import { buildManifest, openVerified, restoreLocal } from '../tools/db/backup.mj
 import { dumpSql } from '../tools/db/dump.mjs';
 import { loadKey, keyId, generateKey, BackupCryptoError } from '../tools/backup/crypto.mjs';
 import { dirAdapter } from '../tools/backup/storage.mjs';
+import { PROD, ACCOUNT, infoReply, migrationsCfg, identityCfg, evidenceDir } from './cf_sim.mjs';
 
 const ok = (c, m) => { assert.ok(c, m); console.log('ok ', m); };
 const kindOf = fn => { try { fn(); return null; } catch (e) { assert.ok(e instanceof BackupCryptoError, e.message); return e.kind; } };
 const tmp = mkdtempSync(join(tmpdir(), 'tatame-key-test-'));
 assert.ok(!/onedrive/i.test(tmp));
 const logs = [];
-const deps = (env, exec = () => { throw new Error('não deveria chamar o wrangler'); }, envs = {}) => ({ environments: () => envs, wranglerVersion: () => '4.155.0', exec, isTTY: () => false, ask: async () => '', out: m => logs.push(m), err: m => logs.push(m), env });
+const EVD = evidenceDir();
+const deps = (env, exec = () => { throw new Error('não deveria chamar o wrangler'); }, envs = {}) => ({ environments: () => envs, migrationsConfigText: () => migrationsCfg(envs), identityConfigText: identityCfg, wranglerVersion: () => '4.155.0', exec, isTTY: () => false, ask: async () => '', out: m => logs.push(m), err: m => logs.push(m), env: env && { TATAME_EVIDENCE_DIR: EVD, ...env } });
 const run = (argv, env, exec, envs) => main(argv, deps(env, exec, envs));
 const last = () => logs[logs.length - 1] || '';
 
@@ -115,10 +117,11 @@ try {
 
   // ================= adulteração e falha de descriptografia não importam nada =================
   const IDS = { staging: '11111111-1111-4111-8111-111111111111' };
-  const envs = { staging: { kind: 'remote', database_name: 'tatame-staging', database_id: IDS.staging } };
+  const envs = { staging: { kind: 'remote', database_name: 'tatame-staging', database_id: IDS.staging }, production: PROD };
   const remote = join(tmp, 'remote-staging.db'); new DatabaseSync(remote).close();
   const calls = [];
   const sim = args => {
+    const info = infoReply(args, { account: ACCOUNT, cfgEnvs: envs }); if (info) return info;
     calls.push(args.join(' '));
     assert.ok(args.includes('-c') && args[args.indexOf('-c') + 1] === MIGRATIONS_CONFIG);
     const db = new DatabaseSync(remote);
