@@ -282,13 +282,16 @@ const AUD_NET = v => typeof v === 'string' && v.length <= 45 && (v === 'desconhe
 const AUD_OBJ = shape => v => !!v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).every(k => k in shape && shape[k](v[k]));
 const AUD_TXT = max => v => typeof v === 'string' && v.length <= max;
 const ROLES = ['admin', 'professor'], STATUSES = ['ativo', 'trancado', 'inativo'];
-// Retrato de aula (lesson_updated/lesson_deleted, formato anterior à 6.4-C mantido): permite reconstruir a chamada. Único caso com
-// texto de equipe (tema e observações da AULA, não do aluno). O "antes" vem do BANCO: conferido por chave e tipo/tamanho, sem
-// exigir o formato atual da API (uma aula antiga fora do formato não pode ficar impossível de corrigir ou excluir).
+// Retrato de aula (lesson_updated/lesson_deleted): ids, data, horários, modalidade, marcador e as listas de presença e técnicas,
+// para reconstruir a chamada. SEM texto livre: tema (title) e observações (notes) da aula NÃO entram (podem conter dados
+// pessoais); não há chave para eles, então o helper recusa se voltarem. Registros gravados antes deste ajuste podem tê-los e
+// continuam como estão (nada é reescrito). O "antes" vem do BANCO: conferido por chave e tipo/tamanho, sem exigir o formato
+// atual da API (uma aula antiga fora do formato não pode ficar impossível de corrigir ou excluir).
 const AUD_KEY = v => typeof v === 'string' && /^[\w-]{1,64}$/.test(v);
 const AUD_LESSON = AUD_OBJ({ id: AUD_KEY, class_id: AUD_NULL(AUD_KEY), date: AUD_TXT(10), start_time: AUD_TXT(5), end_time: AUD_TXT(5), modality: AUD_NULL(AUD_TXT(10)),
-  title: AUD_NULL(AUD_TXT(2000)), notes: AUD_NULL(AUD_TXT(5000)), instructor_id: AUD_NULL(AUD_KEY), created_by: AUD_NULL(AUD_KEY), created_at: AUD_NULL(AUD_TXT(30)),
+  instructor_id: AUD_NULL(AUD_KEY), created_by: AUD_NULL(AUD_KEY), created_at: AUD_NULL(AUD_TXT(30)),
   roll_called: AUD_NULL(AUD_ONE(0, 1)), student_ids: AUD_LIST(AUD_KEY, 5000), technique_ids: AUD_LIST(AUD_INT(1, 1e9), 1000) });
+const lessonForAudit = ({ title, notes, ...meta }) => meta;   // retira o texto livre da aula antes de auditar
 const AUD_GRAD = AUD_OBJ({ belt_since: AUD_NULL(AUD_TXT(10)), degree_since: AUD_NULL(AUD_TXT(10)), imported_classes_belt: AUD_NULL(AUD_INT(0, 1e6)), imported_classes_degree: AUD_NULL(AUD_INT(0, 1e6)) });
 const STUDENT_EDIT_FIELDS = ['name', 'nickname', 'birth_date', 'sex', 'phone', 'email', 'start_date', 'prior_months', 'weight_kg', 'goals', 'notes'];
 const CLASS_EDIT_FIELDS = ['name', 'weekday', 'start_time', 'end_time', 'level', 'modality', 'instructor_id', 'active'];
@@ -310,7 +313,7 @@ const AUDIT_EVENTS = {
   password_change_failed: { target: ['staff'], outcomes: ['limit'], legacy: 'actor', detail: { tentativas: AUD_INT(0, 100), janela_min: AUD_INT(1, 1440) } },
   staff_password_reset: { target: ['staff'], outcomes: ['ok'], legacy: 'actor', detail: { conta: AUD_ID, sessoes_encerradas: AUD_BOOL, codigos_de_recuperacao_invalidados: AUD_BOOL } },
   lesson_updated: { target: ['lesson'], outcomes: ['ok'], legacy: 'actor', max: 400000, detail: { lesson_id: AUD_ID, before: AUD_LESSON, after: AUD_OBJ({ class_id: AUD_NULL(AUD_ID), date: isDate, start_time: isTime, end_time: isTime,
-    modality: AUD_ONE('gi', 'nogi', 'livre'), title: AUD_NULL(AUD_TXT(120)), notes: AUD_NULL(AUD_TXT(2000)), instructor_id: AUD_NULL(AUD_ID), roll_called: AUD_NULL(AUD_ONE(0, 1)),
+    modality: AUD_ONE('gi', 'nogi', 'livre'), instructor_id: AUD_NULL(AUD_ID), roll_called: AUD_NULL(AUD_ONE(0, 1)),
     student_ids: AUD_LIST(AUD_ID, LESSON_STUDENTS_MAX), technique_ids: AUD_LIST(AUD_INT(1, 1e9), LESSON_TECHS_MAX) }) } },
   lesson_deleted: { target: ['lesson'], outcomes: ['ok'], legacy: 'actor', max: 300000, detail: { lesson_id: AUD_ID, before: AUD_LESSON } },
   // ----- novos (6.4-C): staff_id NULL -----
@@ -650,7 +653,7 @@ const CLASS_FIELDS = b => {
   return o;
 };
 
-// Retrato de uma chamada para a auditoria (sem segredos): os campos da aula e as listas de presença e técnicas.
+// Estado de uma chamada (campos da aula e listas de presença e técnicas): usado na edição e, sem o texto livre (lessonForAudit), na auditoria.
 async function lessonSnapshot(db, id) {
   const l = await first(db, 'SELECT id, class_id, date, start_time, end_time, modality, title, notes, instructor_id, created_by, created_at, roll_called FROM lessons WHERE id = ?', id);
   if (!l) return null;
@@ -708,8 +711,8 @@ async function saveLesson(db, staff, b, id) {
     stmts.push(db.prepare('DELETE FROM attendance WHERE lesson_id = ?').bind(id));
     stmts.push(db.prepare('DELETE FROM lesson_techniques WHERE lesson_id = ?').bind(id));
     // Só registra se a aula ainda existe no momento do batch (excluída no meio do caminho: o UPDATE não muda nada e não há evento).
-    stmts.push(audit(db, 'lesson_updated', { actor: staff.id, target: ['lesson', id], detail: { lesson_id: id, before,
-      after: { ...o, roll_called: roll, student_ids: studentIds.slice().sort(), technique_ids: techIds.slice().sort((x, y) => x - y) } } },
+    stmts.push(audit(db, 'lesson_updated', { actor: staff.id, target: ['lesson', id], detail: { lesson_id: id, before: lessonForAudit(before),
+      after: { ...lessonForAudit(o), roll_called: roll, student_ids: studentIds.slice().sort(), technique_ids: techIds.slice().sort((x, y) => x - y) } } },
       { where: 'EXISTS (SELECT 1 FROM lessons WHERE id = ?)', params: [id] }));
   } else {
     id = uuid();
@@ -1168,7 +1171,7 @@ async function route(req, env, url, ctx) {
       await ownRecent(ex.created_by, ex.created_at, 'chamadas', 'lesson_delete', ['lesson', ex.id]);
       const before = await lessonSnapshot(db, m[1]);
       // Evento só se a aula ainda existe no batch (duas exclusões simultâneas: um evento, como uma exclusão).
-      await db.batch([audit(db, 'lesson_deleted', { actor: me.id, target: ['lesson', m[1]], detail: { lesson_id: m[1], before } }, { where: 'EXISTS (SELECT 1 FROM lessons WHERE id = ?)', params: [m[1]] }),
+      await db.batch([audit(db, 'lesson_deleted', { actor: me.id, target: ['lesson', m[1]], detail: { lesson_id: m[1], before: lessonForAudit(before) } }, { where: 'EXISTS (SELECT 1 FROM lessons WHERE id = ?)', params: [m[1]] }),
         db.prepare('DELETE FROM lessons WHERE id = ?').bind(m[1])]);
       return json({ ok: true });
     }
@@ -1336,7 +1339,8 @@ async function route(req, env, url, ctx) {
       s.metrics.next ? (s.metrics.next.kind === 'grau' ? `${s.metrics.next.to_degrees}º grau` : `faixa ${s.metrics.next.to_belt || 'a definir'}`) : '', s.metrics.ready ? 'sim' : 'não']);
     const csv = '﻿' + [head, ...rows].map(r => r.map(q).join(';')).join('\r\n');
     // Sem escrita no banco: o evento é gravado ANTES de o arquivo sair. Se a gravação falhar, a exportação falha (500) e nenhum
-    // dado é entregue. Garantia: não há exportação entregue sem registro (o registro diz "gerada e liberada", não "recebida").
+    // dado é entregue. Garantia: não há resposta com o arquivo sem registro. O evento significa "exportação processada e arquivo
+    // preparado para a resposta"; NÃO confirma que o download terminou nem que o navegador recebeu (o servidor não sabe disso).
     await audit(db, 'students_exported', { actor: me.id, target: ['export', 'alunos.csv'], detail: { linhas: rows.length } }).run();
     return new Response(csv, { headers: { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': 'attachment; filename="alunos.csv"', 'cache-control': 'no-store' } });
   }

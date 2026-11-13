@@ -31,8 +31,13 @@ Eventos anteriores à 6.4-C (mesmo `event`, mesmo `staff_id`, mesmo `detail`; ag
 | `password_changed` | quem trocou | staff (a própria) | ok | `por`, `sessoes_encerradas`, `codigos_de_recuperacao_invalidados` |
 | `password_change_failed` | quem tentou | staff (a própria) | limit | `tentativas`, `janela_min` |
 | `staff_password_reset` | **quem fez** (o admin) | staff (a conta) | ok | `conta`, `sessoes_encerradas`, `codigos_de_recuperacao_invalidados` |
-| `lesson_updated` | quem editou | lesson | ok | `lesson_id`, `before`, `after` (retrato da chamada) |
-| `lesson_deleted` | quem excluiu | lesson | ok | `lesson_id`, `before` |
+| `lesson_updated` | quem editou | lesson | ok | `lesson_id`, `before`, `after` (retrato da chamada, **sem** tema e observações) |
+| `lesson_deleted` | quem excluiu | lesson | ok | `lesson_id`, `before` (idem) |
+
+Retrato da chamada: `before` = `id`, `class_id`, `date`, `start_time`, `end_time`, `modality`, `instructor_id`,
+`created_by`, `created_at`, `roll_called`, `student_ids`, `technique_ids`; `after` = os mesmos, menos `id`, `created_by` e
+`created_at`. Registros gravados antes do ajuste da 6.4-C podem conter `title` e `notes` no retrato: continuam como estão
+(nenhum evento antigo é reescrito; sem migração). Quem lê a tabela deve tratar essas chaves como opcionais.
 
 Eventos novos (6.4-C, `staff_id` nulo):
 
@@ -56,7 +61,7 @@ Eventos novos (6.4-C, `staff_id` nulo):
 | `technique_created` / `technique_updated` / `technique_deleted` | technique | categoria, faixa mínima, ativa / `campos` / — |
 | `rules_updated` | rules | `faixas` (as que mudaram de fato) |
 | `settings_updated` | settings (`academy_name`) | — (o valor não é registrado) |
-| `students_exported` | export (`alunos.csv`) | `linhas` |
+| `students_exported` | export (`alunos.csv`) | `linhas` (exportação processada e arquivo preparado para a resposta; não confirma download) |
 | `action_denied` | o alvo tentado, se conhecido | `acao`, `motivo` (`requer_admin`, `autoria_ou_prazo`, `ultimo_admin`) |
 
 Eventos sem mudança real não são gravados (salvar uma turma, técnica, critério ou ajuste sem alterar nada; PUT de equipe
@@ -66,18 +71,18 @@ igual ao estado atual).
 
 Senha, hash, sal, token ou cookie de sessão, cookie de aparelho, código de recuperação ou de ativação; nome, apelido, e-mail,
 telefone, data de nascimento, objetivos e observações de alunos; nome e e-mail da equipe; nome da academia, de turmas e de
-técnicas; textos livres (descrições, observações de graduação, avaliações); corpos de requisição.
+técnicas; textos livres (tema e observações de aula, descrições, observações de graduação, avaliações); corpos de requisição.
 
-A única exceção de texto é o retrato de aula (`lesson_updated`/`lesson_deleted`, formato anterior à 6.4-C mantido): tema e
-observações **da aula**, escritos pela equipe, para permitir reconstruir uma chamada alterada ou excluída. Se isso for
-considerado excessivo, a alternativa é registrar só os ids e reconstruir a partir de backups (decisão pendente).
+Para reconstruir o texto de uma aula alterada ou excluída, use os backups (o retrato na auditoria tem ids, datas, horários e
+as listas de presença e técnicas, sem texto livre).
 
 ## Como o helper impede conteúdo arbitrário
 
 `audit(db, evento, { actor, target, outcome, detail }, condição)` monta o comando a partir do catálogo `AUDIT_EVENTS`:
 evento fora do catálogo, tipo de alvo ou resultado não previstos, ator que não é um id, chave de `detail` fora da lista,
 valor fora do domínio (lista fechada, inteiro com limites, data, id) ou JSON acima do limite **lançam exceção antes do
-batch**: a operação não acontece e os testes acusam. Não existe chave que aceite texto livre, exceto o retrato de aula.
+batch**: a operação não acontece e os testes acusam. Não existe chave que aceite texto livre (no retrato de aula, `title` e
+`notes` são recusados mesmo vazios).
 Nenhum `INSERT INTO audit_log` existe fora do helper (conferido em `tests/audit.mjs`).
 
 ## Garantias
@@ -88,8 +93,11 @@ Nenhum `INSERT INTO audit_log` existe fora do helper (conferido em `tests/audit.
   administrador; papel e ativo só registram se o valor muda no banco naquele instante. Alunos, aulas, turmas, técnicas e
   graduações: o evento só é gravado se a entidade ainda existe no batch (excluída por outra requisição no meio do caminho =
   nenhum evento). Setup: só se este batch criou o administrador.
-- **Exportação (sem escrita):** o evento é gravado **antes** de o arquivo sair; se a gravação falhar, a resposta é 500 e
-  nenhum dado é entregue. O registro significa "gerada e liberada", não "recebida pelo navegador".
+- **Exportação (sem escrita):** o CSV é montado, o evento é gravado e só então a resposta com o arquivo é devolvida; se a
+  gravação falhar, a resposta é 500 e nenhum dado é entregue. O evento representa uma **exportação processada e um arquivo
+  preparado para a resposta**. Ele **não confirma** que o download terminou nem que o navegador recebeu o arquivo: o
+  servidor não tem como saber disso (a conexão pode cair ou o cliente desistir depois). Testado: o evento já existe antes de
+  o corpo da resposta ser lido e continua igual se o download é abandonado.
 - **Logout:** evento e fim da sessão no mesmo batch, e o evento só se a sessão ainda existe (dois logouts simultâneos = um
   evento). **Exceção deliberada:** se a gravação do evento falhar, a sessão é encerrada mesmo assim, sem evento. Sair é a
   operação que aumenta a segurança; a auditoria não pode impedi-la.

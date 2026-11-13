@@ -86,7 +86,8 @@ await denied(p1, adminLesson, { created_by: P1 }, 'professor edita chamada do ad
   const ev = audits('lesson_updated');
   const last = JSON.parse(ev[ev.length - 1].detail);
   ok(ev.length === before + 1 && ev[ev.length - 1].staff_id === P1 && last.lesson_id === l, 'edição autorizada gera 1 registro lesson_updated com quem alterou e qual chamada');
-  ok(last.before.student_ids.join() === s0.a.map(r => r.student_id).join() && last.before.title === 'Original' && last.after.student_ids.join() === b && last.after.title === 'Nova', 'o registro guarda o estado anterior (presenças e título) e o novo');
+  // 6.4-C (ajuste): tema e observações da aula (texto livre) não vão mais para a auditoria; presenças e técnicas, sim.
+  ok(last.before.student_ids.join() === s0.a.map(r => r.student_id).join() && last.after.student_ids.join() === b && !('title' in last.before) && !('title' in last.after) && !/Original|Nova/.test(ev[ev.length - 1].detail), 'o registro guarda o estado anterior e o novo (presenças), sem o tema da aula');
   ok(/^\d{4}-\d\d-\d\dT/.test(ev[ev.length - 1].at), 'o registro tem data e hora');
   ok(!/pass|token|salt|session/i.test(ev[ev.length - 1].detail), 'o registro não contém senha, token ou sessão');
   const del = await lesson(p1, 1);

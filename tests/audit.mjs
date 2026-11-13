@@ -36,7 +36,7 @@ function world() {
   const count = () => row('SELECT count(*) n FROM audit_log').n;
   // Linha no formato comparável: colunas estruturadas + detail parseado.
   const shape = r => r && ({ event: r.event, staff_id: r.staff_id, actor_id: r.actor_id, target_type: r.target_type, target_id: r.target_id, outcome: r.outcome, detail: r.detail && r.detail.startsWith('{') ? JSON.parse(r.detail) : r.detail });
-  return { DB, ctl, call, row, rows, ev, last, count, shape };
+  return { DB, env, ctl, call, row, rows, ev, last, count, shape };
 }
 const SETUP = { academy_name: 'Academia Sigilosa', name: 'Dono Da Silva', email: 'dono@x.test', password: 'cordafina-71' };
 async function boot(w) {
@@ -168,26 +168,41 @@ const E = (event, actor, tt, tid, extra = {}) => ({ event, staff_id: null, actor
   ok(!JSON.stringify(w.rows('SELECT * FROM audit_log')).includes('nota livre'), 'observação da graduação não vai para a auditoria'); }
 
 // ================= aulas =================
+// Textos livres com cara de dado pessoal: não podem aparecer na auditoria.
+const TXT = { t1: 'Guarda da Maria Exemplo', n1: 'Maria Exemplo machucou o joelho, tel 11 97777-6666', t2: 'Revisão do João Exemplo', n2: 'João Exemplo faltou por doença' };
+const BEFORE_KEYS = 'id,class_id,date,start_time,end_time,modality,instructor_id,created_by,created_at,roll_called,student_ids,technique_ids';
+const AFTER_KEYS = 'class_id,date,start_time,end_time,modality,instructor_id,roll_called,student_ids,technique_ids';
 { const w = world(); const { admin, A1 } = await boot(w);
   const S = (await w.call('POST', '/api/students', { name: 'Aluno Aula', start_date: '2024-01-10' }, { cookie: admin })).body.student.id;
   const C = (await w.call('POST', '/api/classes', { name: 'Turma Noite', weekday: 1, start_time: '19:00', end_time: '20:30' }, { cookie: admin })).body.id;
   const T = await mkTech(w, admin);
+  // registro histórico (formato de antes do ajuste: tema e observações no retrato): deve continuar intacto e legível
+  w.DB.raw.prepare("INSERT INTO audit_log (at, event, staff_id, detail) VALUES ('2026-01-01T00:00:00.000Z', 'lesson_deleted', ?, ?)").run(A1, JSON.stringify({ lesson_id: crypto.randomUUID(), before: { id: 'x', title: 'Tema antigo', notes: 'Observação antiga', student_ids: [] } }));
+  const HIST = "SELECT * FROM audit_log WHERE at = '2026-01-01T00:00:00.000Z'", hist = JSON.stringify(w.row(HIST));
   let n = w.count();
-  const cl = await w.call('POST', '/api/lessons', { class_id: C, date: '2025-06-02', student_ids: [S], technique_ids: [T], title: 'Tema', notes: 'nota da aula' }, { cookie: admin });
+  const cl = await w.call('POST', '/api/lessons', { class_id: C, date: '2025-06-02', student_ids: [S], technique_ids: [T], title: TXT.t1, notes: TXT.n1 }, { cookie: admin });
   const L = cl.body.id;
   ok(cl.status === 201 && w.count() === n + 1 && is(w.shape(w.last()), E('lesson_created', A1, 'lesson', L, { detail: { turma: C, data: '2025-06-02', alunos: 1, tecnicas: 1, chamada: 1 } })), 'criação de aula: lesson_created com turma, data, quantidades e marcador de chamada');
   n = w.count();
-  ok((await w.call('PUT', '/api/lessons/' + L, { class_id: C, date: '2025-06-02', student_ids: [], roll_called: true, technique_ids: [T], title: 'Tema' }, { cookie: admin })).status === 200 && w.count() === n + 1, 'edição de aula: um evento');
+  ok((await w.call('PUT', '/api/lessons/' + L, { class_id: C, date: '2025-06-02', student_ids: [], roll_called: true, technique_ids: [T], title: TXT.t2, notes: TXT.n2 }, { cookie: admin })).status === 200 && w.count() === n + 1, 'edição de aula: um evento');
   const up = w.shape(w.last());
   ok(up.event === 'lesson_updated' && up.staff_id === A1 && up.actor_id === A1 && up.target_type === 'lesson' && up.target_id === L && up.outcome === 'ok' && Object.keys(up.detail).join() === 'lesson_id,before,after'
-    && up.detail.before.student_ids.join() === S && up.detail.after.student_ids.length === 0 && up.detail.after.roll_called === 1, 'lesson_updated: formato anterior mantido (staff_id = quem editou, lesson_id/before/after) + ator/alvo/resultado');
+    && up.detail.before.student_ids.join() === S && up.detail.after.student_ids.length === 0 && up.detail.after.roll_called === 1, 'lesson_updated: staff_id = quem editou, lesson_id/before/after + ator/alvo/resultado');
+  const rawUp = w.last().detail;
+  ok(Object.keys(up.detail.before).join() === BEFORE_KEYS && Object.keys(up.detail.after).join() === AFTER_KEYS, 'lesson_updated: before e after só com ids, data, horários, modalidade, marcador e listas');
+  ok(!/title|notes/.test(rawUp) && !Object.values(TXT).some(t => rawUp.includes(t)), 'lesson_updated NÃO armazena tema nem observações (nem os anteriores, nem os novos)');
   // aula de histórico desconhecido (roll_called NULL): editar continua possível e auditado
   w.DB.raw.prepare('UPDATE lessons SET roll_called = NULL WHERE id = ?').run(L); w.DB.raw.exec(`DELETE FROM attendance WHERE lesson_id = '${L}'`);
   ok((await w.call('PUT', '/api/lessons/' + L, { class_id: C, date: '2025-06-02', technique_ids: [T], title: 'Tema' }, { cookie: admin })).status === 200 && w.shape(w.last()).detail.after.roll_called === null, 'aula com marcador desconhecido (NULL): edição permitida e auditada com o valor mantido');
   n = w.count();
   ok((await w.call('DELETE', '/api/lessons/' + L, undefined, { cookie: admin })).status === 200 && w.count() === n + 1, 'exclusão de aula: um evento');
   const del = w.shape(w.last());
-  ok(del.event === 'lesson_deleted' && del.staff_id === A1 && del.actor_id === A1 && del.target_id === L && del.detail.lesson_id === L && del.detail.before.id === L, 'lesson_deleted: formato anterior (staff_id, lesson_id, before) + ator/alvo');
+  ok(del.event === 'lesson_deleted' && del.staff_id === A1 && del.actor_id === A1 && del.target_id === L && del.detail.lesson_id === L && del.detail.before.id === L, 'lesson_deleted: staff_id, lesson_id, before + ator/alvo');
+  const rawDel = w.last().detail;
+  ok(Object.keys(del.detail.before).join() === BEFORE_KEYS && !/title|notes/.test(rawDel) && !Object.values(TXT).some(t => rawDel.includes(t)), 'lesson_deleted NÃO armazena tema nem observações');
+  ok(JSON.stringify(w.row(HIST)) === hist && JSON.parse(JSON.parse(hist).detail).before.title === 'Tema antigo', 'registro histórico com tema/observações: intacto e legível (nada reescrito, sem migração)');
+  const allLesson = JSON.stringify(w.rows("SELECT * FROM audit_log WHERE event LIKE 'lesson_%' AND at <> '2026-01-01T00:00:00.000Z'"));
+  ok(!Object.values(TXT).some(t => allLesson.includes(t)), 'nenhum evento de aula novo guarda conteúdo livre da aula');
   // aula excluída por outra requisição entre a leitura e o batch: nem edição, nem evento
   const L2 = (await w.call('POST', '/api/lessons', { date: '2025-06-03', start_time: '19:00', end_time: '20:00' }, { cookie: admin })).body.id;
   n = w.count();
@@ -247,6 +262,15 @@ const E = (event, actor, tt, tid, extra = {}) => ({ event, staff_id: null, actor
   let n = w.count();
   const ex = await w.call('GET', '/api/export/alunos.csv', undefined, { cookie: admin });
   ok(ex.status === 200 && ex.text.includes('Aluno Exportado') && w.count() === n + 1 && is(w.shape(w.last()), E('students_exported', A1, 'export', 'alunos.csv', { detail: { linhas: 2 } })), 'exportação de alunos.csv: students_exported com o número de linhas, sem o conteúdo');
+  // Semântica: o evento existe assim que a resposta com o arquivo é preparada, ANTES de o cliente ler qualquer byte, e continua
+  // lá se o cliente abandona o download. Portanto NÃO confirma download nem recebimento.
+  n = w.count();
+  const raw = await W.fetch(new Request('https://t.test/api/export/alunos.csv', { headers: { cookie: admin } }), w.env);
+  const atPrep = w.count();
+  await raw.body.cancel();
+  ok(raw.status === 200 && atPrep === n + 1 && w.count() === n + 1 && w.last().event === 'students_exported', 'exportação: o evento é gravado ao preparar a resposta, antes de o corpo ser lido, e não muda se o download é abandonado (não é confirmação de download)');
+  const doc = readFileSync(fileURLToPath(new URL('../docs/auditoria.md', import.meta.url)), 'utf8');
+  ok(/preparado para a resposta/.test(doc) && /não confirma/.test(doc) && !/gerada e liberada/.test(doc), 'docs/auditoria.md: students_exported = exportação processada e arquivo preparado para a resposta; não confirma download');
   w.DB.raw.exec("CREATE TRIGGER falha BEFORE INSERT ON audit_log WHEN NEW.event = 'students_exported' BEGIN SELECT RAISE(ABORT, 'falha simulada'); END;");
   const ex2 = await w.call('GET', '/api/export/alunos.csv', undefined, { cookie: admin });
   ok(ex2.status === 500 && !ex2.text.includes('Aluno Exportado'), 'se o registro da exportação falhar, o arquivo NÃO é entregue (sem exportação sem registro)');
@@ -343,7 +367,13 @@ const E = (event, actor, tt, tid, extra = {}) => ({ event, staff_id: null, actor
   ok(throws(() => V('staff_created', { actor: id, target: ['staff', 'Fulano'], detail: { papel: 'admin' } }), /id do alvo/), 'id de alvo que não é um id: recusado');
   ok(throws(() => V('staff_created', { actor: null, target: ['staff', id2], detail: { papel: 'admin' } }), /ator/) && throws(() => V('logout', { actor: 'dono@x.test', target: ['staff', id2] }), /ator/), 'ator ausente ou que não é um id: recusado');
   ok(throws(() => V('reset_used', { actor: id, target: ['staff', id], detail: { codigo: 'X' } }), /detail/) && throws(() => V('logout', { actor: id, target: ['staff', id], detail: { a: 1 } }), /detail/), 'evento sem detail previsto: qualquer detail é recusado');
-  ok(throws(() => V('lesson_updated', { actor: id, target: ['lesson', id2], detail: { lesson_id: id2, before: { id: id2, notes: 'x'.repeat(6000) } } }), /before/), 'texto acima do limite: recusado');
+  ok(throws(() => V('lesson_updated', { actor: id, target: ['lesson', id2], detail: { lesson_id: id2, before: { id: id2, created_at: 'x'.repeat(31) } } }), /before/), 'texto acima do limite: recusado');
+  const okSnap = { id: id2, date: '2025-06-02', student_ids: [], technique_ids: [] }, okAfter = { date: '2025-06-02', start_time: '19:00', end_time: '20:00', modality: 'gi', roll_called: 1, student_ids: [], technique_ids: [] };
+  ok(!throws(() => V('lesson_updated', { actor: id, target: ['lesson', id2], detail: { lesson_id: id2, before: okSnap, after: okAfter } }), /./), 'retrato de aula sem texto livre: aceito');
+  ok(['title', 'notes'].every(k => throws(() => V('lesson_updated', { actor: id, target: ['lesson', id2], detail: { lesson_id: id2, before: { ...okSnap, [k]: 'x' }, after: okAfter } }), /before/)
+    && throws(() => V('lesson_updated', { actor: id, target: ['lesson', id2], detail: { lesson_id: id2, before: okSnap, after: { ...okAfter, [k]: 'x' } } }), /after/)
+    && throws(() => V('lesson_deleted', { actor: id, target: ['lesson', id2], detail: { lesson_id: id2, before: { ...okSnap, [k]: null } } }), /before/)), 'catálogo recusa title e notes em lesson_updated (before e after) e lesson_deleted, mesmo vazios');
+  ok(throws(() => V('students_exported', { actor: id, target: ['export', 'alunos.csv'], detail: { linhas: 1, baixado: true } }), /baixado/), 'students_exported só aceita linhas (nenhuma chave que afirme download)');
   ok(throws(() => V('action_denied', { actor: id, outcome: 'denied', detail: { acao: 'apagar_tudo', motivo: 'requer_admin' } }), /acao/), 'action_denied só com ações da lista');
   const used = [...readFileSync(WORKER, 'utf8').matchAll(/audit\(db, '([a-z_]+)'/g)].map(m => m[1]);
   ok(used.length >= 30 && used.every(e => e in H.__EVENTS), `todo evento gravado pelo Worker está no catálogo (${new Set(used).size} eventos distintos nas chamadas)`);
