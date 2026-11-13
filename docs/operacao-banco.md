@@ -15,8 +15,8 @@ desenvolvimento: siga os passos na ordem e não pule as verificações.
 | `db/migrations/000_base.sql` | Schema histórico do commit `17f1fbd`, o formato em que a produção foi criada. |
 | `db/migrations/001_recuperacao_senha.sql` | Tabelas `password_resets` e `audit_log`. |
 | `db/migrations/002_marcador_de_chamada.sql` | Coluna `lessons.roll_called` + preenchimento só onde há presença. |
-| `db/migrations/003_auditoria_e_ultimo_admin.sql` | Colunas `actor_id`, `target_type`, `target_id`, `outcome` em `audit_log` (anuláveis, sem preenchimento retroativo) e gatilho `staff_keep_active_admin`, que aborta qualquer `UPDATE` que deixaria o banco sem administrador ativo (mensagem `ultimo_admin_ativo`). |
-| `db/rollbacks/*.down.sql` | Reversões testadas de 001, 002 e 003 (a da 003 remove o gatilho e as 4 colunas com `DROP COLUMN`, sem recriar a tabela nem apagar registros). Reverter na ordem inversa: 003, depois 002, depois 001. **Não** ficam em `db/migrations/` (o wrangler aplicaria todo `.sql` da pasta). |
+| `db/migrations/003_auditoria_e_ultimo_admin.sql` | Colunas `actor_id`, `target_type`, `target_id`, `outcome` em `audit_log` (anuláveis, sem preenchimento retroativo) e dois gatilhos que abortam qualquer `UPDATE` (`staff_keep_active_admin`) ou `DELETE` (`staff_keep_active_admin_on_delete`) que deixaria o banco sem administrador ativo, inclusive por SQL direto (mensagem `ultimo_admin_ativo`, sem dados da conta). |
+| `db/rollbacks/*.down.sql` | Reversões testadas de 001, 002 e 003 (a da 003 remove os dois gatilhos e as 4 colunas com `DROP COLUMN`, sem recriar a tabela nem apagar registros). Reverter na ordem inversa: 003, depois 002, depois 001. **Não** ficam em `db/migrations/` (o wrangler aplicaria todo `.sql` da pasta). |
 | `db/environments.json` | Ambientes: `local`, `staging`, `restore-test`, `production`. Nome e `database_id` de cada banco. Sem segredos. |
 | `db/wrangler.migrations.jsonc` | Configuração do wrangler **só** para migrações/consultas, usada com `-c ... --env <ambiente>`. |
 | `tools/db.mjs` | Wrapper de todas as operações (abaixo). |

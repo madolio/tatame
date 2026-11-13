@@ -26,6 +26,14 @@ BEGIN
   SELECT RAISE(ABORT, 'ultimo_admin_ativo');
 END;
 
+CREATE TRIGGER IF NOT EXISTS staff_keep_active_admin_on_delete BEFORE DELETE ON staff
+FOR EACH ROW
+WHEN OLD.role = 'admin' AND OLD.active = 1
+  AND NOT EXISTS (SELECT 1 FROM staff WHERE role = 'admin' AND active = 1 AND id <> OLD.id)
+BEGIN
+  SELECT RAISE(ABORT, 'ultimo_admin_ativo');
+END;
+
 CREATE TABLE IF NOT EXISTS auth_sessions (
   token_hash TEXT PRIMARY KEY,
   staff_id TEXT NOT NULL REFERENCES staff (id) ON DELETE CASCADE,

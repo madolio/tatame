@@ -57,7 +57,10 @@ const get = (w, id) => w.row('SELECT id, name, role, belt, active, pass_hash FRO
 
 // ================= integridade básica =================
 { const w = world(); const s = await boot(w, { second: false });
-  ok(w.row("SELECT count(*) n FROM sqlite_master WHERE type = 'trigger' AND name = 'staff_keep_active_admin'").n === 1, 'banco dos testes tem a trava da migração 003: a API da 6.4-A funciona com ela ativa');
+  ok(w.DB.raw.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name").all().map(t => t.name).join() === 'staff_keep_active_admin,staff_keep_active_admin_on_delete', 'banco dos testes tem as duas travas da migração 003 (UPDATE e DELETE): toda a 6.4-A roda com elas ativas');
+  let del = null; try { w.DB.raw.prepare('DELETE FROM staff WHERE id = ?').run(s.A1); } catch (e) { del = String(e.message); }
+  ok(/ultimo_admin_ativo/.test(del || '') && w.admins() === 1 && get(w, s.A1).role === 'admin', 'SQL direto fora da API: excluir o único admin ativo é abortado, a conta continua');
+  ok(w.DB.raw.prepare('DELETE FROM staff WHERE id = ?').run(s.PROF).changes === 1 && w.admins() === 1, 'SQL direto: excluir o professor continua permitido');
   const before = JSON.stringify(w.staff());
   const r1 = await put(w, s.a1, s.A1, { name: 'Dono Da Silva', role: 'professor' });
   const r2 = await put(w, s.a1, s.A1, { name: 'Dono Da Silva', active: 0 });

@@ -85,8 +85,11 @@ try {
     ok((await call('POST', '/api/setup', form(generateCode(), { email: 'outro2@x.test' }))).status === 409 && count(DB, "SELECT count(*) n FROM staff WHERE role = 'admin'") === 1, 'nova tentativa após o setup (criar outro administrador pelo endpoint inicial): 409, continua 1 administrador');
     DB.raw.exec(buildSetupSql(generateCode(), { replace: true }));
     ok(tokenN(DB) === 0, 'configurar código numa instalação com equipe: o SQL não grava nada (setup não reabre)');
-    // estado incoerente forjado: sem equipe e sem código (ex.: alguém apagou a equipe direto no banco)
-    DB.raw.exec('PRAGMA foreign_keys = OFF; DELETE FROM staff; PRAGMA foreign_keys = ON;');
+    // estado incoerente forjado: sem equipe e sem código. Desde a 003 o banco recusa apagar o último admin ativo; para
+    // forjar, remove-se antes a trava (como num banco anterior à 003 ou adulterado). A defesa do Worker não depende dela.
+    let blocked = null; try { DB.raw.exec('DELETE FROM staff'); } catch (e) { blocked = String(e.message); }
+    ok(/ultimo_admin_ativo/.test(blocked || '') && staffN(DB) === 2, 'apagar toda a equipe direto no banco: abortado pela trava da 003 (ninguém é apagado)');
+    DB.raw.exec('DROP TRIGGER staff_keep_active_admin_on_delete; PRAGMA foreign_keys = OFF; DELETE FROM staff; PRAGMA foreign_keys = ON;');
     ok((await call('POST', '/api/setup', form(CODE))).status === 403 && staffN(DB) === 0, 'código consumido não volta a valer nem se a equipe sumir: 403'); }
 
   // ================= concorrência (mesmo código) =================

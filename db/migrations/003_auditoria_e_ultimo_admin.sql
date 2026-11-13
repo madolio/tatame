@@ -23,3 +23,14 @@ WHEN OLD.role = 'admin' AND OLD.active = 1 AND NOT (NEW.role = 'admin' AND NEW.a
 BEGIN
   SELECT RAISE(ABORT, 'ultimo_admin_ativo');
 END;
+
+-- Mesma regra para exclusão: apagar quem não é admin ativo (professor ou admin inativo) segue permitido; apagar um admin
+-- ativo só quando existe outro. Hoje não há endpoint de exclusão de equipe: isto protege o SQL direto. FOR EACH ROW vale
+-- para DELETE de várias linhas: a última linha admin ativa aborta o comando inteiro (nenhuma linha é apagada).
+CREATE TRIGGER staff_keep_active_admin_on_delete BEFORE DELETE ON staff
+FOR EACH ROW
+WHEN OLD.role = 'admin' AND OLD.active = 1
+  AND NOT EXISTS (SELECT 1 FROM staff WHERE role = 'admin' AND active = 1 AND id <> OLD.id)
+BEGIN
+  SELECT RAISE(ABORT, 'ultimo_admin_ativo');
+END;

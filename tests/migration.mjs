@@ -6,7 +6,8 @@ import { makeD1 } from './d1shim.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const DB = makeD1();
-DB.load(root + 'db/schema.sql'); DB.load(root + 'db/rollbacks/001_recuperacao_senha.down.sql'); // formato anterior = schema atual sem as tabelas da 001
+// formato anterior = schema atual sem as tabelas da 001 e sem as travas da 003 (que são posteriores à 001)
+DB.load(root + 'db/schema.sql'); DB.load(root + 'db/rollbacks/003_auditoria_e_ultimo_admin.down.sql'); DB.load(root + 'db/rollbacks/001_recuperacao_senha.down.sql');
 const tables = () => DB.raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map(r => r.name);
 const ok = (c, m) => { assert.ok(c, m); console.log('ok ', m); };
 
@@ -73,7 +74,7 @@ console.log('\n-- 003 auditoria estruturada e último admin --');
   ok(fails("INSERT INTO audit_log (event, target_type) VALUES ('x', 'senha')") && fails("INSERT INTO audit_log (event, outcome) VALUES ('x', 'talvez')"), 'target_type e outcome só aceitam os valores previstos (ou NULL)');
   ok(['staff', 'student', 'lesson', 'promotion', 'class', 'technique', 'rules', 'settings', 'export'].every(t => !fails(`INSERT INTO audit_log (event, target_type, outcome) VALUES ('t', '${t}', 'denied')`)) && !fails("INSERT INTO audit_log (event, outcome) VALUES ('t', 'limit')"), 'todos os target_type e outcome previstos são aceitos');
   r.exec("DELETE FROM audit_log WHERE event = 't'");
-  const snap = () => JSON.stringify([q('SELECT * FROM audit_log ORDER BY id'), q("SELECT sql FROM sqlite_master WHERE name IN ('audit_log', 'staff_keep_active_admin')")]);
+  const snap = () => JSON.stringify([q('SELECT * FROM audit_log ORDER BY id'), q("SELECT sql FROM sqlite_master WHERE name IN ('audit_log', 'staff_keep_active_admin', 'staff_keep_active_admin_on_delete') ORDER BY name")]);
   const s0 = snap();
   let again = null; try { old.load(M3); } catch (e) { again = String(e.message); }
   ok(/duplicate column/.test(again || '') && snap() === s0, 'segunda execução é recusada pelo SQLite (duplicate column) sem mudar nada (aplicar uma vez só, como a 002)');
@@ -93,6 +94,30 @@ console.log('\n-- 003 auditoria estruturada e último admin --');
   r.exec("UPDATE staff SET active = 1 WHERE id = 'adm1'");
   ok(/ultimo_admin_ativo/.test(fails("UPDATE staff SET role = 'professor' WHERE role = 'admin'") || '') && admins() === 2, 'rebaixar TODOS os admins num só comando: abortado inteiro (nenhuma linha muda)');
   ok(/ultimo_admin_ativo/.test(fails("BEGIN; UPDATE staff SET active = 0 WHERE id = 'adm1'; UPDATE staff SET active = 0 WHERE id = 'adm2'; COMMIT;") || '') && (r.exec('ROLLBACK'), admins() === 2), 'dois comandos na mesma transação: o segundo é abortado; com rollback, nada muda');
+
+  // ----- trigger de DELETE (staff_keep_active_admin_on_delete) -----
+  const row = id => JSON.stringify(q('SELECT * FROM staff WHERE id = ?', id));
+  const nStaff = () => q('SELECT count(*) n FROM staff')[0].n;
+  const addAdmin = (id, active = 1) => r.exec(`INSERT INTO staff (id, name, email, pass_hash, pass_salt, role, active) VALUES ('${id}', 'Admin ${id}', '${id}@x.test', 'h', 's', 'admin', ${active})`);
+  ok(trig().sort().join() === 'staff_keep_active_admin,staff_keep_active_admin_on_delete', 'migração cria também a trava de exclusão');
+  r.exec("UPDATE staff SET active = 0 WHERE id = 'adm2'"); // adm1 volta a ser o único admin ATIVO; adm2 fica admin inativo
+  const adm1 = row('adm1'), auditRefs = q("SELECT count(*) n FROM audit_log WHERE staff_id = 'adm1'")[0].n;
+  const d1 = fails("DELETE FROM staff WHERE id = 'adm1'");
+  ok(/ultimo_admin_ativo/.test(d1 || '') && admins() === 1, 'SQL direto: excluir o único administrador ativo é abortado pelo banco');
+  ok(row('adm1') === adm1 && q("SELECT count(*) n FROM audit_log WHERE staff_id = 'adm1'")[0].n === auditRefs, 'o registro do admin fica intacto (e o ON DELETE SET NULL da auditoria não chegou a rodar)');
+  ok(!/a1@x\.test|adm1|Admin Um/.test(d1), 'a mensagem da trava de exclusão não expõe dados da conta');
+  ok(!fails("DELETE FROM staff WHERE id = 'adm2'") && !q("SELECT 1 FROM staff WHERE id = 'adm2'").length && admins() === 1, 'excluir um administrador INATIVO é permitido (não reduz os admins ativos)');
+  ok(!fails("DELETE FROM staff WHERE id = 'prof'") && !q("SELECT 1 FROM staff WHERE id = 'prof'").length && admins() === 1, 'excluir um professor é permitido');
+  addAdmin('adm2');
+  ok(!fails("DELETE FROM staff WHERE id = 'adm2'") && admins() === 1 && row('adm1') === adm1, 'com outro admin ativo, excluir um administrador ativo é permitido');
+  addAdmin('adm2'); addAdmin('adm3'); r.exec("INSERT INTO staff (id, name, email, pass_hash, pass_salt, role) VALUES ('prof', 'Prof', 'p@x.test', 'h', 's', 'professor')");
+  const all = JSON.stringify(q('SELECT * FROM staff ORDER BY id'));
+  ok(/ultimo_admin_ativo/.test(fails("DELETE FROM staff WHERE role = 'admin'") || '') && JSON.stringify(q('SELECT * FROM staff ORDER BY id')) === all, 'excluir TODOS os admins ativos num só comando: abortado inteiro (nenhuma linha some)');
+  ok(/ultimo_admin_ativo/.test(fails('DELETE FROM staff') || '') && JSON.stringify(q('SELECT * FROM staff ORDER BY id')) === all && nStaff() === 4, 'DELETE FROM staff sem WHERE: abortado inteiro, nem o professor é apagado');
+  ok(/ultimo_admin_ativo/.test(fails("BEGIN; DELETE FROM staff WHERE id = 'adm1'; DELETE FROM staff WHERE id = 'adm2'; DELETE FROM staff WHERE id = 'adm3'; COMMIT;") || '') && (r.exec('ROLLBACK'), JSON.stringify(q('SELECT * FROM staff ORDER BY id')) === all), 'exclusões em sequência na mesma transação: a última é abortada; com rollback, nada muda');
+  ok(/ultimo_admin_ativo/.test(fails("BEGIN; UPDATE staff SET active = 0 WHERE id IN ('adm2', 'adm3'); DELETE FROM staff WHERE id = 'adm1'; COMMIT;") || '') && (r.exec('ROLLBACK'), admins() === 3), 'desativar os outros e depois excluir o restante: a exclusão é abortada (as duas travas se somam)');
+  r.exec("DELETE FROM staff WHERE id = 'adm3'; UPDATE staff SET role = 'admin', active = 1 WHERE id = 'adm2'");
+  ok(admins() === 2 && nStaff() === 3, 'estado de volta ao da seção anterior (adm1 e adm2 admins ativos, prof professor)');
   const empty = makeD1(); empty.load(root + 'db/schema.sql');
   empty.raw.exec("INSERT INTO staff (id, name, email, pass_hash, pass_salt, role) VALUES ('first', 'Primeiro Admin', 'f@x.test', 'h', 's', 'admin')");
   ok(empty.raw.prepare("SELECT count(*) n FROM staff WHERE role = 'admin' AND active = 1").get().n === 1, 'criar o primeiro administrador num banco vazio é permitido (sem trava de INSERT)');
@@ -101,13 +126,15 @@ console.log('\n-- 003 auditoria estruturada e último admin --');
   const kept = JSON.stringify(q('SELECT id, at, event, staff_id, detail FROM audit_log ORDER BY id'));
   const nAudit = q('SELECT count(*) n FROM audit_log')[0].n;
   old.load(R3);
-  ok(!trig().length, 'reversão remove o trigger');
+  ok(!trig().length, 'reversão remove os dois triggers (UPDATE e DELETE)');
   ok(acols().join() === 'id,at,event,staff_id,detail', 'reversão remove só as 4 colunas novas');
   ok(JSON.stringify(q('SELECT id, at, event, staff_id, detail FROM audit_log ORDER BY id')) === kept && q('SELECT count(*) n FROM audit_log')[0].n === nAudit, 'reversão não apaga nem altera registros de auditoria');
   ok(!fails("UPDATE staff SET role = 'professor' WHERE id = 'adm2'") && !fails("UPDATE staff SET active = 0 WHERE id = 'adm1'"), 'sem o trigger, o banco volta a aceitar (comportamento anterior à 003)');
   r.exec("UPDATE staff SET active = 1 WHERE id = 'adm1'");
+  r.exec('BEGIN'); const delOk = !fails("DELETE FROM staff WHERE id = 'adm1'") && admins() === 0; r.exec('ROLLBACK');
+  ok(delOk && admins() === 1, 'sem o trigger de DELETE, excluir o último admin volta a ser aceito (testado em transação desfeita)');
   old.load(M3);
-  ok(NEW.every(c => acols().includes(c)) && trig().join() === 'staff_keep_active_admin' && /ultimo_admin_ativo/.test(fails("UPDATE staff SET active = 0 WHERE id = 'adm1'") || ''), 'a migração pode ser reaplicada depois da reversão (colunas e trava de volta)');
+  ok(NEW.every(c => acols().includes(c)) && trig().sort().join() === 'staff_keep_active_admin,staff_keep_active_admin_on_delete' && /ultimo_admin_ativo/.test(fails("UPDATE staff SET active = 0 WHERE id = 'adm1'") || '') && /ultimo_admin_ativo/.test(fails("DELETE FROM staff WHERE id = 'adm1'") || ''), 'a migração pode ser reaplicada depois da reversão (colunas e as duas travas de volta)');
 }
 
 // ---------- Cadeia 000 + 001 + 002 + 003 = db/schema.sql ----------
@@ -127,7 +154,7 @@ console.log('\n-- cadeia de migrações --');
       };
     }
     out.$seed = { rules: q('SELECT * FROM rules ORDER BY belt'), settings: q('SELECT * FROM settings ORDER BY key') };
-    out.$triggers = q("SELECT name, tbl_name, sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name").map(x => ({ ...x, sql: x.sql.replace(/s+/g, ' ').trim() }));
+    out.$triggers = q("SELECT name, tbl_name, sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name").map(x => ({ ...x, sql: x.sql.replace(/\s+/g, ' ').trim() }));
     return out;
   };
   const chain = makeD1();
@@ -136,7 +163,8 @@ console.log('\n-- cadeia de migrações --');
   const a = shape(chain), b = shape(ref);
   ok(JSON.stringify(Object.keys(a).sort()) === JSON.stringify(Object.keys(b).sort()), `cadeia e schema.sql têm as mesmas tabelas (${Object.keys(b).length - 1})`);
   for (const t of Object.keys(b)) assert.deepStrictEqual(a[t], b[t], 'diferença na tabela ' + t);
-  ok(a.$triggers.length === 1, 'cadeia e schema.sql têm o mesmo trigger (staff_keep_active_admin, texto idêntico)');
+  assert.deepStrictEqual(a.$triggers, b.$triggers);
+  ok(a.$triggers.map(t => t.name).join() === 'staff_keep_active_admin,staff_keep_active_admin_on_delete', 'cadeia e schema.sql têm os mesmos dois triggers (UPDATE e DELETE, texto idêntico)');
   ok(true, 'cadeia 000..003 é idêntica a db/schema.sql (colunas, tipos, NOT NULL, defaults, CHECK, FKs, índices, triggers, dados-semente)');
   ok(fs.readdirSync(root + 'db/migrations').every(f => !f.includes('.down.')), 'nenhum arquivo de reversão em db/migrations/');
   const base = makeD1(); base.load(root + 'db/migrations/000_base.sql');
