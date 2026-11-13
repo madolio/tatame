@@ -113,7 +113,7 @@ await step('chamada da aula de hoje', async () => {
   await clear(); await page.click('[data-act=lesson-save]'); assert.match(await toastText(), /Chamada salva/);
   await page.waitForSelector('text=3 presentes');
   // a mesma turma no mesmo dia não duplica
-  await page.click('.nav a[data-tab=aulas]'); await page.click('text=Nova chamada');
+  await page.click('.nav a[data-tab=aulas]'); await page.click('[data-act=aulas-tab][data-id=chamadas]'); await page.click('text=Nova chamada');
   await page.selectOption('#ls-class', { index: 1 });
   const opt = await page.$eval('#ls-class', s => s.options[s.selectedIndex].text);
   if (/07:00/.test(opt)) { await page.click(`#att-list .att >> nth=0`); await clear(); await page.click('[data-act=lesson-save]'); assert.match(await toastText(), /Já existe uma chamada/); }
@@ -286,6 +286,45 @@ await step('recuperação de senha por código', async () => {
   await page.waitForSelector('#reset-err:has-text("já foi utilizado")');
   await page.click('#to-login'); await page.fill('[name=email]', 'rafael@exemplo.com'); await page.fill('[name=password]', 'rafael-nova-2026'); await page.click('button[type=submit]');
   await page.waitForSelector('#main h1:has-text("Academia Exemplo BJJ")');
+});
+
+await step('agenda: semana, programar aula, conflito de professor, chamada e correção', async () => {
+  await page.setViewportSize({ width: 390, height: 860 });
+  await page.click('.nav a[data-tab=aulas]'); await page.click('[data-act=aulas-tab][data-id=agenda]'); await page.waitForSelector('.ag-strip');
+  assert.equal(await page.textContent('.top h1'), 'Agenda');
+  await page.click('[data-act=ag-view][data-v=semana]'); await page.waitForSelector('.ag-item');
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), 'agenda: sem rolagem horizontal no celular');
+  await shot('13-agenda-celular-semana');
+  // navegação entre semanas: o intervalo muda e "Hoje" volta
+  const range0 = await page.textContent('.ag-range b');
+  await page.click('[data-act=ag-nav][data-n="1"]'); await page.waitForFunction(r => document.querySelector('.ag-range b').textContent !== r, range0);
+  await page.click('[data-act=ag-nav][data-n="-1"]'); await page.waitForFunction(r => document.querySelector('.ag-range b').textContent === r, range0);
+  // programar uma aula futura: aparece na agenda; o mesmo professor sobreposto é recusado com o motivo
+  const staff = await page.$$eval('#main', () => S.staff.filter(s => s.active).map(s => s.id));
+  const open = async () => { await page.click('.top [data-act=ag-new]'); await page.waitForSelector('#ag-form'); };
+  await open(); await page.fill('#ag-form [name=title]', 'Aulão de teste'); await page.fill('#ag-form [name=date]', ago(-2)); await page.fill('#ag-form [name=start]', '14:00');
+  await page.selectOption('#ag-form [name=instr]', staff[0]); await clear(); await page.click('#ag-form .btn');
+  assert.match(await toastText(), /Aula programada/); await page.waitForSelector('.ag-item:has-text("Aulão de teste")');
+  await open(); await page.fill('#ag-form [name=title]', 'Sobreposta'); await page.fill('#ag-form [name=date]', ago(-2)); await page.fill('#ag-form [name=start]', '14:30');
+  await page.selectOption('#ag-form [name=instr]', staff[0]); await page.click('#ag-form .btn'); await page.waitForSelector('#ag-err:has-text("já tem aula")');
+  await shot('14-agenda-conflito'); await page.click('[data-act=close-sheet]');
+  // detalhe da aula programada e remoção
+  await page.click('.ag-item:has-text("Aulão de teste")'); await page.waitForSelector('.ag-detail:has-text("Programada")'); await shot('15-agenda-detalhe');
+  await page.click('[data-act=ag-remove]'); await clear(); await page.click('[data-x=ok]'); assert.match(await toastText(), /Aula removida/);
+  await page.waitForFunction(() => !document.body.textContent.includes('Aulão de teste'));
+  // chamada pela agenda: aula de hoje sem chamada → Realizada → correção
+  await open(); await page.fill('#ag-form [name=title]', 'Treino de teste'); await page.fill('#ag-form [name=date]', ago(0)); await page.fill('#ag-form [name=start]', '05:00');
+  await page.click('#ag-form .btn'); await page.waitForSelector('.ag-item:has-text("Treino de teste")');
+  await page.click('.ag-item:has-text("Treino de teste")'); await page.click('[data-act=ag-roll]'); await page.waitForSelector('#lesson-screen');
+  await page.click('.att >> nth=0'); await clear(); await page.click('[data-act=lesson-save]'); assert.match(await toastText(), /Chamada salva/);
+  await page.waitForSelector('.ag-item[data-k=done]:has-text("Treino de teste")');
+  await page.click('.ag-item:has-text("Treino de teste")'); await page.waitForSelector('[data-act=ag-roll]:has-text("Corrigir chamada")'); await page.click('[data-act=ag-roll]'); await page.waitForSelector('#lesson-screen');
+  await page.click('.att >> nth=1'); await clear(); await page.click('[data-act=lesson-save]'); assert.match(await toastText(), /Chamada salva/);
+  await page.waitForSelector('.ag-item[data-k=done]:has-text("2 presentes")');
+  // dia: faixa de dias e lista; desktop com a semana em colunas
+  await page.click('[data-act=ag-today]'); await page.click('.ag-day.is-today'); await page.waitForSelector('.ag-dayhead'); await shot('16-agenda-celular-dia');
+  await page.setViewportSize({ width: 1280, height: 900 }); await page.click('[data-act=ag-view][data-v=semana]'); await page.waitForSelector('.ag-week .ag-item'); await shot('17-agenda-desktop');
+  assert.ok(await page.evaluate(() => getComputedStyle(document.querySelector('.ag-week')).display === 'grid'), 'agenda: semana em colunas no desktop');
 });
 
 await step('desktop', async () => {

@@ -112,7 +112,7 @@ const formObj = f => Object.fromEntries(new FormData(f).entries());
 // =====================================================================
 // Estado
 // =====================================================================
-const S = { loaded: false, ui: { stuFilter: 'ativos', stuBelt: '', q: '', aulasTab: 'chamadas', techCat: '', techQ: '', techSt: '', detailTab: 'graduacao', skillFilter: 'curriculo' } };
+const S = { loaded: false, ui: { stuFilter: 'ativos', stuBelt: '', q: '', aulasTab: 'agenda', techCat: '', techQ: '', techSt: '', detailTab: 'graduacao', skillFilter: 'curriculo' } };
 const stuById = id => S.students.find(s => s.id === id);
 const techById = id => S.techniques.find(t => t.id === id);
 const clsById = id => S.classes.find(c => c.id === id);
@@ -196,7 +196,7 @@ function renderReset(msg = '') {
 // =====================================================================
 // Shell
 // =====================================================================
-const TABS = [['painel', 'Painel', 'home'], ['alunos', 'Alunos', 'users'], ['aulas', 'Aulas', 'calendar'], ['tecnicas', 'Técnicas', 'book'], ['ajustes', 'Ajustes', 'gear']];
+const TABS = [['painel', 'Painel', 'home'], ['alunos', 'Alunos', 'users'], ['aulas', 'Agenda', 'calendar'], ['tecnicas', 'Técnicas', 'book'], ['ajustes', 'Ajustes', 'gear']];
 const route = () => (location.hash.replace('#', '') || 'painel').split('/');
 // Desktop: sidebar com marca, navegação e conta. Mobile: só a navegação, como barra inferior.
 function renderShell() {
@@ -575,7 +575,8 @@ VIEWS.aulas = () => {
     api('GET', '/api/lessons').then(r => { lessonsCache = r; if (route()[0] === 'aulas') render(); }).catch(e => toast(e.message, 'error'));
   }
   let body = '';
-  if (tab === 'chamadas') {
+  if (tab === 'agenda') body = agendaBody();   // web/agenda.js
+  else if (tab === 'chamadas') {
     const todays = S.dashboard.todays;
     // Agenda: as aulas registradas agrupadas por dia, com a data numa coluna à esquerda.
     const days = [];
@@ -604,9 +605,9 @@ VIEWS.aulas = () => {
       : '<div class="card empty"><b>Nenhum horário cadastrado</b>Cadastre a grade da academia (dia, horário, nível). A chamada já vem preenchida com a turma certa.</div>';
   }
   return {
-    html: `<div class="top"><div><h1>Aulas</h1><div class="sub">Chamada, técnicas passadas e horários</div></div>
-      ${tab === 'chamadas' ? `<button class="btn ghost sm" data-act="lesson-new" data-date="${S.today}">${I('plus', 15)} Nova chamada</button>` : `<button class="btn ghost sm" data-act="class-edit">${I('plus', 15)} Novo horário</button>`}</div>
-    <div class="tabs" role="tablist"><button data-act="aulas-tab" data-id="chamadas" class="${tab === 'chamadas' ? 'on' : ''}" role="tab" aria-selected="${tab === 'chamadas'}">Chamadas</button><button data-act="aulas-tab" data-id="horarios" class="${tab === 'horarios' ? 'on' : ''}" role="tab" aria-selected="${tab === 'horarios'}">Horários <span class="muted num">${S.classes.length}</span></button></div>
+    html: `<div class="top"><div><h1>Agenda</h1><div class="sub">Aulas da semana, chamada e horários</div></div>
+      ${tab === 'agenda' ? `<button class="btn sm" data-act="ag-new">${I('plus', 15)} Nova aula</button>` : tab === 'chamadas' ? `<button class="btn ghost sm" data-act="lesson-new" data-date="${S.today}">${I('plus', 15)} Nova chamada</button>` : `<button class="btn ghost sm" data-act="class-edit">${I('plus', 15)} Novo horário</button>`}</div>
+    <div class="tabs" role="tablist"><button data-act="aulas-tab" data-id="agenda" class="${tab === 'agenda' ? 'on' : ''}" role="tab" aria-selected="${tab === 'agenda'}">Agenda</button><button data-act="aulas-tab" data-id="chamadas" class="${tab === 'chamadas' ? 'on' : ''}" role="tab" aria-selected="${tab === 'chamadas'}">Chamadas</button><button data-act="aulas-tab" data-id="horarios" class="${tab === 'horarios' ? 'on' : ''}" role="tab" aria-selected="${tab === 'horarios'}">Horários <span class="muted num">${S.classes.length}</span></button></div>
     <div class="tab-body">${body}</div>`
   };
 };
