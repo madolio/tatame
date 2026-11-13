@@ -1075,15 +1075,37 @@ async function route(req, env, url, ctx) {
     const b = await body();
     const ex = await first(db, 'SELECT * FROM staff WHERE id = ?', m[1]);
     if (!ex) throw new HttpError(404, 'Pessoa não encontrada.');
-    const role = oneOf(b.role, ['admin', 'professor'], 'Função', ex.role), active = flag(b.active, 'Ativo', 1);
+    // Campo ausente = mantém o valor atual (antes: sem `active` a conta era REATIVADA; sem `belt` a faixa era apagada).
+    // `belt` presente e vazio/null continua limpando a faixa, como antes.
+    const has = k => Object.prototype.hasOwnProperty.call(b, k);
+    const role = oneOf(b.role, ['admin', 'professor'], 'Função', ex.role), active = has('active') ? flag(b.active, 'Ativo', ex.active) : ex.active;
+    const belt = has('belt') ? oneOf(b.belt, BELTS, 'Faixa', null) : ex.belt;
     if (ex.id === me.id && (role !== 'admin' || !active)) bad('Você não pode remover seu próprio acesso de administrador.');
-    const stmts = [db.prepare('UPDATE staff SET name=?, role=?, belt=?, active=? WHERE id=?').bind(str(b.name ?? ex.name, { min: 2, max: 80, field: 'Nome', required: true }), role, oneOf(b.belt, BELTS, 'Faixa', null), active, ex.id)];
+    // V8: a autorização e o "sempre um administrador ativo" são conferidos DENTRO de cada comando de escrita, no estado do
+    // banco naquele instante (não no `me` lido no começo da requisição): (1) quem faz a ação ainda é admin ativo; (2) o alvo
+    // existe; (3) se o alvo é admin ativo e vai deixar de ser, existe OUTRO admin ativo. Dois admins rebaixando um ao outro
+    // ao mesmo tempo: o segundo comando já encontra o seu autor rebaixado e não muda nada.
+    const guard = `EXISTS (SELECT 1 FROM staff WHERE id = ? AND role = 'admin' AND active = 1)
+      AND EXISTS (SELECT 1 FROM staff WHERE id = ?)
+      AND ((? = 'admin' AND ? = 1) OR NOT EXISTS (SELECT 1 FROM staff WHERE id = ? AND role = 'admin' AND active = 1)
+        OR EXISTS (SELECT 1 FROM staff WHERE role = 'admin' AND active = 1 AND id <> ?))`;
+    const G = [me.id, ex.id, role, active, ex.id, ex.id];
+    const stmts = [];
     // Senha definida pelo administrador: no mesmo batch, fim das sessões da pessoa, códigos de recuperação pendentes e auditoria.
-    if (b.password) { const { hash, salt } = await hashPassword(checkPassword(b.password, { email: ex.email, name: b.name ?? ex.name })); stmts.push(db.prepare('UPDATE staff SET pass_hash=?, pass_salt=? WHERE id=?').bind(hash, salt, ex.id), db.prepare('DELETE FROM auth_sessions WHERE staff_id = ?').bind(ex.id), db.prepare('DELETE FROM password_resets WHERE staff_id = ?').bind(ex.id), audit(db, 'staff_password_reset', me.id, JSON.stringify({ conta: ex.id, sessoes_encerradas: true, codigos_de_recuperacao_invalidados: true }))); }
+    // Todos os comandos levam a mesma condição e a alteração principal é o ÚLTIMO: os anteriores não mexem em papel/ativo,
+    // então a condição dá o mesmo resultado em todos; se ela falhar, nada do batch muda.
+    if (b.password) { const { hash, salt } = await hashPassword(checkPassword(b.password, { email: ex.email, name: b.name ?? ex.name })); stmts.push(db.prepare(`UPDATE staff SET pass_hash=?, pass_salt=? WHERE id=? AND ${guard}`).bind(hash, salt, ex.id, ...G), db.prepare(`DELETE FROM auth_sessions WHERE staff_id = ? AND ${guard}`).bind(ex.id, ...G), db.prepare(`DELETE FROM password_resets WHERE staff_id = ? AND ${guard}`).bind(ex.id, ...G), db.prepare(`INSERT INTO audit_log (event, staff_id, detail) SELECT 'staff_password_reset', ?, ? WHERE ${guard}`).bind(me.id, JSON.stringify({ conta: ex.id, sessoes_encerradas: true, codigos_de_recuperacao_invalidados: true }), ...G)); }
     // Desativar: sessões caem e códigos de recuperação pendentes são apagados (senão voltariam a valer se a conta fosse
     // reativada dentro dos 30 minutos). Mesmo batch da desativação.
-    if (!active) stmts.push(db.prepare('DELETE FROM auth_sessions WHERE staff_id = ?').bind(ex.id), db.prepare('DELETE FROM password_resets WHERE staff_id = ?').bind(ex.id));
-    await db.batch(stmts);
+    if (!active) stmts.push(db.prepare(`DELETE FROM auth_sessions WHERE staff_id = ? AND ${guard}`).bind(ex.id, ...G), db.prepare(`DELETE FROM password_resets WHERE staff_id = ? AND ${guard}`).bind(ex.id, ...G));
+    stmts.push(db.prepare(`UPDATE staff SET name=?, role=?, belt=?, active=? WHERE id=? AND ${guard}`).bind(str(b.name ?? ex.name, { min: 2, max: 80, field: 'Nome', required: true }), role, belt, active, ex.id, ...G));
+    const res = await db.batch(stmts);
+    if (res?.[stmts.length - 1]?.meta?.changes !== 1) {
+      // Só classifica a recusa (a proteção já foi a condição acima): alvo sumiu, autor perdeu o acesso, ou último admin.
+      if (!(await first(db, 'SELECT 1 x FROM staff WHERE id = ?', ex.id))) throw new HttpError(404, 'Pessoa não encontrada.');
+      if (!(await first(db, "SELECT 1 x FROM staff WHERE id = ? AND role = 'admin' AND active = 1", me.id))) throw new HttpError(403, 'Apenas o administrador pode fazer isso.');
+      throw new HttpError(409, 'É preciso manter pelo menos um administrador ativo.');
+    }
     return json(await first(db, 'SELECT id, name, email, role, belt, active FROM staff WHERE id = ?', ex.id));
   }
 
