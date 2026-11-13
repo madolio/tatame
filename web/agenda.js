@@ -3,10 +3,9 @@
    conflito de horário e presença é do servidor (GET /api/agenda, POST/PUT/DELETE /api/lessons). */
 'use strict';
 
-// Cancelamento, feriado e reposição precisam de um campo de estado na aula (migração 004, ainda não liberada). A interface já está pronta:
-// com cancel=false nada disso aparece. Quando o servidor passar a enviar { status: 'cancelled', cancel_kind: 'cancel'|'holiday', cancel_reason }
-// nos itens, os cartões já mostram o estado; falta ligar o botão (ver docs/agenda.md).
-const AG_CAPS = { cancel: false };
+// Cancelamento, feriado e reposição dependem da migração 004 (docs/agenda-migracao-004/). O servidor informa em
+// capabilities.cancel se a tabela existe; sem ela nada disso aparece. Quem pode agir é decidido pelo servidor (a tela só esconde o que sabe que será negado).
+const agCan = () => !!(AG.data && AG.data.capabilities && AG.data.capabilities.cancel);
 const AG = { fprof: '', fmod: '', view: 'dia', date: null, data: null, key: '', loading: '', error: '', stale: false, items: new Map() };
 const agPad = n => String(n).padStart(2, '0');
 const agAdd = (s, n) => { const d = pd(s); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${agPad(d.getMonth() + 1)}-${agPad(d.getDate())}`; };
@@ -127,8 +126,15 @@ function agOpen(key) {
     : `<button class="btn" data-act="ag-roll" data-class="${it.class_id}" data-d="${it.date}">${I('check', 15)} Fazer chamada</button>`);
   else acts.push(`<p class="muted small" style="margin:0">A chamada abre no dia da aula.</p>`);
   if (lesson) acts.push(`<button class="btn ghost" data-act="ag-dup" data-id="${it.id}">${I('plus', 15)} Duplicar para outra data</button>`);
-  if (AG_CAPS.cancel && it.status !== 'cancelled' && !done) acts.push(`<button class="btn danger" data-act="ag-cancel" data-key="${esc(key)}">${I('x', 15)} Cancelar aula ou feriado</button>`);
-  if (AG_CAPS.cancel && it.status === 'cancelled') acts.push(`<button class="btn" data-act="ag-makeup" data-key="${esc(key)}">${I('plus', 15)} Marcar reposição</button>`);
+  // Aula gravada: o autor (ou admin). Turma da grade e feriado: só admin. O servidor confere de novo.
+  const mayAct = it.kind === 'planned' ? isAdmin() : own;
+  const holiday = it.status === 'cancelled' && it.cancel_kind === 'holiday';
+  if (agCan() && it.status !== 'cancelled' && !done && mayAct) acts.push(`<button class="btn danger" data-act="ag-cancel" data-key="${esc(key)}">${I('x', 15)} Cancelar esta aula</button>`);
+  if (agCan() && it.status !== 'cancelled' && isAdmin()) acts.push(`<button class="btn ghost" data-act="ag-holiday" data-d="${it.date}">${I('calendar', 15)} Marcar feriado neste dia</button>`);
+  if (agCan() && it.status === 'cancelled' && (holiday ? isAdmin() : mayAct)) {
+    acts.push(`<button class="btn" data-act="ag-restore" data-id="${it.exception_id}">${I('check', 15)} ${holiday ? 'Desfazer feriado' : 'Restaurar aula'}</button>`);
+    if (!holiday && !it.makeup_lesson_id && it.date >= agAdd(S.today, -60)) acts.push(`<button class="btn ghost" data-act="ag-makeup" data-key="${esc(key)}">${I('plus', 15)} Marcar reposição</button>`);
+  }
   if (own) acts.push(`<button class="btn ghost" data-act="ag-edit" data-id="${it.id}">${I('edit', 15)} Editar dados</button>`);
   if (own && !done) acts.push(`<button class="btn danger" data-act="ag-remove" data-id="${it.id}">${I('trash', 15)} Remover da agenda</button>`);
   if (!lesson) acts.push(`<button class="btn ghost" data-act="ag-class" data-id="${it.class_id}">${I('clock', 15)} Editar horário fixo</button>`);
@@ -141,6 +147,7 @@ function agOpen(key) {
         <div><dt>Tipo</dt><dd>${MOD[it.modality]}${it.level || it.class_level ? ` · ${LEVEL[it.level || it.class_level]}` : ''}${lesson && it.title ? `<br><span class="muted">${esc(it.title)}</span>` : ''}</dd></div>
         ${lesson ? `<div><dt>Presença</dt><dd><b class="num">${it.attendees}</b> aluno${it.attendees === 1 ? '' : 's'}${it.roll_called === 0 && !it.attendees ? ' <span class="muted">· sem chamada</span>' : ''}</dd></div>` : ''}
       </dl>
+      ${it.makeup_lesson_id ? `<p class="muted small" style="margin:12px 0 0">Reposição já marcada.</p>` : ''}${it.makeup_of_date ? `<p class="muted small" style="margin:12px 0 0">Reposição da aula de ${ld(it.makeup_of_date)}.</p>` : ''}
       ${it.conflict ? `<p class="ag-warn big">${I('alert', 15)} Este professor tem outra aula que se sobrepõe a esta no mesmo dia.</p>` : ''}
       ${reg.length ? `<div class="ag-reg"><span class="muted xs">Costumam vir (${reg.length})</span><div>${reg.slice(0, 8).map(s => `<span class="ag-chip">${esc(s.name.split(' ')[0])}</span>`).join('')}${reg.length > 8 ? `<span class="ag-chip more">+${reg.length - 8}</span>` : ''}</div></div>` : ''}
       ${!lesson && it.date > S.today ? '<p class="muted xs" style="margin:10px 0 0">Esta aula vem da grade semanal e se repete toda semana.</p>' : ''}
@@ -204,6 +211,45 @@ async function agForm({ id, date, classId, dup } = {}) {
   };
 }
 
+// ---------- Cancelar aula / marcar feriado / reposição ----------
+function agCancelForm(it, kind) {
+  const holiday = kind === 'holiday';
+  const w = sheet(`${sheetHead(holiday ? 'Marcar feriado' : 'Cancelar aula')}<form id="ag-cancel-form" class="form-grid" novalidate>
+    <p class="full muted small" style="margin:0">${holiday ? `Todas as aulas de ${cap(WD[pd(it.date).getDay()])}, ${ld(it.date)} ficam canceladas.` : `${esc(it.name)} · ${cap(WD[pd(it.date).getDay()])}, ${ld(it.date)} às ${it.start_time}.`}
+      Nada é apagado: a presença já registrada é preservada e você pode restaurar depois.</p>
+    <label class="field full"><span>Motivo</span><input class="input" name="reason" maxlength="200" required placeholder="${holiday ? 'Ex.: Feriado nacional' : 'Ex.: Professor em campeonato'}" autofocus></label>
+    <div class="err full" id="ag-cerr" role="alert"></div>
+    <button class="btn danger full">${holiday ? 'Marcar feriado' : 'Cancelar aula'}</button></form>`);
+  const f = $('#ag-cancel-form', w);
+  f.onsubmit = async e => {
+    e.preventDefault();
+    const reason = f.reason.value.trim(), err = $('#ag-cerr', w);
+    if (reason.length < 3) return err.textContent = 'Explique o motivo em poucas palavras.';
+    const b = holiday ? { kind: 'holiday', date: it.date, reason } : { kind: 'cancel', reason, ...(it.kind === 'lesson' ? { lesson_id: it.id } : { class_id: it.class_id, date: it.date }) };
+    try { await api('POST', '/api/agenda/exceptions', b); toast(holiday ? 'Feriado marcado.' : 'Aula cancelada.', 'success'); closeSheet(); await agReload(it.date); }
+    catch (er) { if (er.status !== 401) err.textContent = er.message; }
+  };
+}
+function agMakeupForm(it) {
+  const len = hm(it.end_time) - hm(it.start_time), lens = [...new Set([30, 45, 60, 75, 90, 120, len])].filter(n => n > 0).sort((a, b) => a - b);
+  const w = sheet(`${sheetHead('Marcar reposição')}<form id="ag-makeup-form" class="form-grid" novalidate>
+    <p class="full muted small" style="margin:0">Repõe ${esc(it.name)} do dia ${ld(it.date)}. A reposição é uma aula nova, sem chamada, ligada ao cancelamento.</p>
+    <label class="field"><span>Data</span><input class="input" type="date" name="date" value="${agAdd(S.today > it.date ? S.today : it.date, 1)}" required></label>
+    <label class="field"><span>Início</span><input class="input" type="time" name="start" value="${it.start_time}" required></label>
+    <label class="field full"><span>Duração</span><select class="input" name="len">${lens.map(n => `<option value="${n}" ${n === len ? 'selected' : ''}>${dur(n)}</option>`).join('')}</select></label>
+    <div class="err full" id="ag-merr" role="alert"></div>
+    <button class="btn full">Marcar reposição</button></form>`);
+  const f = $('#ag-makeup-form', w);
+  f.onsubmit = async e => {
+    e.preventDefault();
+    const err = $('#ag-merr', w), end = hm(f.start.value) + +f.len.value;
+    if (!f.date.value || !f.start.value) return err.textContent = 'Informe a data e o horário.';
+    if (end > 23 * 60 + 59) return err.textContent = 'A aula precisa terminar até 23:59.';
+    try { await api('POST', `/api/agenda/exceptions/${it.exception_id}/makeup`, { date: f.date.value, start_time: f.start.value, end_time: agClock(end) }); toast('Reposição marcada.', 'success'); closeSheet(); await agReload(f.date.value); }
+    catch (er) { if (er.status !== 401) err.textContent = er.message; }
+  };
+}
+
 Object.assign(ACT, {
   'ag-day': el => { AG.view = 'dia'; AG.date = el.dataset.d; render(); },
   'ag-nav': el => { AG.date = agAdd(AG.date || S.today, 7 * +el.dataset.n); render(); },
@@ -213,6 +259,13 @@ Object.assign(ACT, {
   'ag-open': el => { agOpen(el.dataset.key); },
   'ag-new': el => { closeSheet(); agForm({ date: el.dataset.d }); },
   'ag-edit': el => { closeSheet(); agForm({ id: el.dataset.id }); },
+  'ag-cancel': el => { const it = AG.items.get(el.dataset.key); if (it) { closeSheet(); agCancelForm(it, 'cancel'); } },
+  'ag-holiday': el => { const it = { date: el.dataset.d, name: 'Todas as aulas do dia' }; closeSheet(); agCancelForm(it, 'holiday'); },
+  'ag-makeup': el => { const it = AG.items.get(el.dataset.key); if (it) { closeSheet(); agMakeupForm(it); } },
+  'ag-restore': async el => {
+    if (!(await confirmBox('Restaurar a aula?', 'A aula volta para a agenda. O cancelamento fica no histórico.', 'Restaurar', false))) return;
+    await busy(null, async () => { await api('POST', `/api/agenda/exceptions/${el.dataset.id}/restore`); await agReload(); }, 'Aula restaurada.');
+  },
   'ag-dup': el => { closeSheet(); agForm({ dup: el.dataset.id }); },
   'ag-clear-filter': () => { AG.fprof = AG.fmod = ''; render(); },
   'ag-class': el => { closeSheet(); openClass(el.dataset.id); },

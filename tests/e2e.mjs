@@ -354,6 +354,29 @@ await step('agenda: duplicar, aviso de conflito, filtros e teclado', async () =>
   await page.setViewportSize({ width: 1280, height: 900 }); await shot('21-agenda-form-desktop'); await page.click('[data-act=close-sheet]');
 });
 
+await step('agenda: cancelar, reposição e restaurar (com a proposta de migração 004 aplicada no banco de teste)', async () => {
+  DB.load(path.join(ROOT, 'docs/agenda-migracao-004/004_agenda_cancelamento.sql'));
+  await page.setViewportSize({ width: 390, height: 860 });
+  await page.reload(); await page.waitForSelector('.nav a[data-tab=aulas], .tabbar a[data-tab=aulas]'); await page.click('[data-tab=aulas]:visible');
+  await page.click('[data-act=aulas-tab][data-id=agenda]'); await page.waitForSelector('.ag-strip');
+  const open = async () => { await page.click('.top [data-act=ag-new]'); await page.waitForSelector('#ag-form'); };
+  await open(); await page.fill('#ag-form [name=title]', 'Para cancelar'); await page.fill('#ag-form [name=date]', ago(-4)); await page.fill('#ag-form [name=start]', '11:00');
+  await page.click('#ag-form .btn'); await page.waitForSelector('.ag-item:has-text("Para cancelar")');
+  await page.click('.ag-item:has-text("Para cancelar")'); await page.waitForSelector('[data-act=ag-cancel]');
+  assert.equal(await page.$('[data-act=ag-holiday]'), null, 'professor não vê "marcar feriado"');
+  await page.click('[data-act=ag-cancel]'); await page.waitForSelector('#ag-cancel-form');
+  await page.click('#ag-cancel-form .btn'); await page.waitForSelector('#ag-cerr:has-text("motivo")');
+  await page.fill('#ag-cancel-form [name=reason]', 'Professor em campeonato'); await shot('22-agenda-cancelar-form'); await clear(); await page.click('#ag-cancel-form .btn');
+  assert.match(await toastText(), /Aula cancelada/); await page.waitForSelector('.ag-item[data-k=cancelled]:has-text("Para cancelar")'); await shot('23-agenda-cancelada');
+  assert.equal(DB.raw.prepare("SELECT count(*) n FROM lessons WHERE title = 'Para cancelar'").get().n, 1, 'a aula cancelada continua gravada');
+  await page.click('.ag-item[data-k=cancelled]'); await page.waitForSelector('[data-act=ag-makeup]'); await page.click('[data-act=ag-makeup]'); await page.waitForSelector('#ag-makeup-form');
+  await page.fill('#ag-makeup-form [name=date]', ago(-6)); await clear(); await page.click('#ag-makeup-form .btn'); assert.match(await toastText(), /Reposição marcada/);
+  await page.waitForSelector('.ag-item:has-text("Reposição: ")');
+  await page.click('.ag-item[data-k=cancelled]'); await page.waitForSelector('[data-act=ag-restore]:has-text("Restaurar")'); await page.click('[data-act=ag-restore]'); await clear(); await page.click('[data-x=ok]');
+  assert.match(await toastText(), /Aula restaurada/); await page.waitForFunction(() => !document.querySelector('.ag-item[data-k=cancelled]'));
+  assert.ok(DB.raw.prepare("SELECT count(*) n FROM audit_log WHERE event IN ('lesson_cancelled','lesson_restored')").get().n === 2, 'eventos de cancelamento e restauração na auditoria');
+});
+
 await step('desktop', async () => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.click('.nav a[data-tab=painel]'); await page.waitForSelector('#ch-week svg');
