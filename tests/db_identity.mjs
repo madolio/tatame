@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { main, OPS, ROOT, assertGated, registerOp, MIGRATIONS_CONFIG, IDENTITY_CONFIG } from '../tools/db/ops.mjs';
 import { runWrangler, assertAllowedCommand } from '../tools/db/wrangler.mjs';
-import { classifyFailure, verifyIdentity } from '../tools/db/identity.mjs';
+import { classifyFailure, verifyIdentity, checkMigrationsConfig } from '../tools/db/identity.mjs';
 import { IDS, ENVS, PROD, ACCOUNT, infoReply, migrationsCfg, simDeps, evidenceDir, readEvidence } from './cf_sim.mjs';
 
 const ok = (c, m) => { assert.ok(c, m); console.log('ok ', m); };
@@ -184,7 +184,12 @@ assertAllowedCommand(['d1', 'info', 'tatame-staging', '-c', IDENTITY_CONFIG, '--
   ok(!all.includes(SECRET) && !all.includes(PASS) && /segredo omitido/.test(all), 'token e senha do ambiente não aparecem na tela, nos erros nem nas evidências');
   ok(!readdirSync(h.evDir).some(f => readFileSync(join(h.evDir, f), 'utf8').includes('SELECT')), 'evidências sem texto de SQL'); }
 ok(!existsSync(join(ROOT, 'wrangler.toml')) && !existsSync(join(ROOT, 'web', 'wrangler.toml')), 'nenhuma configuração do wrangler na raiz nem em web/');
-ok(JSON.stringify(JSON.parse(readFileSync(join(ROOT, 'db/environments.json'), 'utf8'))).match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i) === null, 'db/environments.json do repositório continua sem nenhum UUID (nada inventado)');
+{ // IDs reais informados pelo usuário a partir do painel (6.5-B, bloco A). Qualquer alteração acidental quebra este teste.
+  const real = JSON.parse(readFileSync(join(ROOT, 'db/environments.json'), 'utf8'));
+  const got = ['staging', 'restore-test', 'production'].map(e => `${real[e].database_name}=${real[e].database_id}`).join(' ');
+  ok(got === 'tatame-staging=463bb48d-d3a8-4805-b188-8071b5d9079a tatame-restore-test=1f76de57-d036-4586-bcd6-c83ab70ad01e tatame-db=3b3cbeec-5eda-41c6-99e0-2b748e632dc5', 'db/environments.json do repositório tem exatamente os nomes e UUIDs reais informados (nenhum inventado)');
+  ok(real.production.protected === true && real['restore-test'].disposable === true && real.staging.app_url === 'PENDENTE', 'produção continua protegida, restore-test descartável e app_url de staging ainda PENDENTE');
+  ok(checkMigrationsConfig(real, readFileSync(MIGRATIONS_CONFIG, 'utf8')).length === 0, 'db/wrangler.migrations.jsonc do repositório coincide com db/environments.json'); }
 { // consulta pelo nome devolvendo outro UUID (conta inconsistente/corrida): a segunda conferência recusa
   const t = { name: 'staging', database_name: 'tatame-staging', database_id: IDS.staging };
   const mk = byName => a => ({ status: 0, stdout: JSON.stringify(a.includes(IDENTITY_CONFIG) ? byName : { uuid: IDS.staging, name: 'tatame-staging' }) });

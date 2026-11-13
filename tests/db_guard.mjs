@@ -50,10 +50,15 @@ await refused(['timetravel-info', '--env', 'production', '--confirm-production=t
 await refused(['import', '--env', 'production', '--confirm-production=tatame-prod-ficticio', '--file', 'b.sql'], 'import com produção como destino (mesmo confirmado)');
 await refused(['restore-test', '--env', 'production', '--confirm-production=tatame-prod-ficticio'], 'restore-test com produção como destino');
 await refused(['restore-test', '--env', 'staging'], 'restore-test com staging como destino');
+// Arquivos reais do repositório (IDs preenchidos na 6.5-B, bloco A). A conta simulada não conhece esses UUIDs: o único
+// comando que pode chegar ao executor é a consulta de identidade (d1 info); nada além disso é executado.
 { const h = harness({ envs: loadEnvironments() }); delete h.deps.migrationsConfigText; delete h.deps.identityConfigText;
   const code = await h.run(['timetravel-info', '--env', 'staging']);
-  ok(code === 3 && h.calls.length === 0 && /RECUSADO/.test(h.err.join('\n')), 'recusa sem executar nada: ambiente real do repositório ainda PENDENTE (arquivos reais)'); }
-await refused(['timetravel-info', '--env', 'production', '--confirm-production=PENDENTE'], 'produção PENDENTE não é liberada nem digitando PENDENTE', { envs: loadEnvironments() });
+  ok(code === 3 && h.calls.length > 0 && h.calls.every(a => a[0] === 'd1' && a[1] === 'info') && /RECUSADO/.test(h.err.join('\n')), 'arquivos reais: staging com identidade não conferida na conta é recusado; só d1 info chega ao executor'); }
+await refused(['timetravel-info', '--env', 'production'], 'arquivos reais: produção sem --confirm-production', { envs: loadEnvironments() });
+await refused(['timetravel-info', '--env', 'production', '--confirm-production=PENDENTE'], 'arquivos reais: produção não é liberada digitando PENDENTE', { envs: loadEnvironments() });
+await refused(['timetravel-info', '--env', 'production', '--confirm-production=tatame-db'], 'arquivos reais: produção sem terminal interativo', { envs: loadEnvironments(), tty: false });
+await refused(['import', '--env', 'production', '--confirm-production=tatame-db', '--file', 'b.sql'], 'arquivos reais: import com produção como destino', { envs: loadEnvironments(), answer: 'tatame-db' });
 
 // nenhuma variável de ambiente libera produção: o resolvedor só olha argumentos e o arquivo de ambientes
 {

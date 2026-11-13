@@ -7,21 +7,21 @@
   "staging": {
     "kind": "remote",
     "database_name": "tatame-staging",
-    "database_id": "PENDENTE",
+    "database_id": "463bb48d-d3a8-4805-b188-8071b5d9079a",
     "app_url": "PENDENTE",
     "descricao": "Ensaios de migração com dados ANONIMIZADOS. Aceita import apenas de backup anonimizado."
   },
   "restore-test": {
     "kind": "remote",
     "database_name": "tatame-restore-test",
-    "database_id": "PENDENTE",
+    "database_id": "1f76de57-d036-4586-bcd6-c83ab70ad01e",
     "disposable": true,
     "descricao": "Descartável: prova que um backup restaura. Backup com dados pessoais reais exige autorização específica."
   },
   "production": {
     "kind": "remote",
-    "database_name": "PENDENTE",
-    "database_id": "PENDENTE",
+    "database_name": "tatame-db",
+    "database_id": "3b3cbeec-5eda-41c6-99e0-2b748e632dc5",
     "protected": true,
     "app_url": "https://tatame-2rx.pages.dev",
     "descricao": "Produção. Exige --confirm-production=<nome exato> e terminal interativo; nunca é destino de import/restore-test."

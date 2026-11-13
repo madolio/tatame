@@ -12,17 +12,17 @@
   "env": {
     "staging": {
       "d1_databases": [
-        { "binding": "DB", "database_name": "tatame-staging", "database_id": "PENDENTE", "migrations_dir": "migrations", "migrations_table": "d1_migrations" }
+        { "binding": "DB", "database_name": "tatame-staging", "database_id": "463bb48d-d3a8-4805-b188-8071b5d9079a", "migrations_dir": "migrations", "migrations_table": "d1_migrations" }
       ]
     },
     "restore-test": {
       "d1_databases": [
-        { "binding": "DB", "database_name": "tatame-restore-test", "database_id": "PENDENTE", "migrations_dir": "migrations", "migrations_table": "d1_migrations" }
+        { "binding": "DB", "database_name": "tatame-restore-test", "database_id": "1f76de57-d036-4586-bcd6-c83ab70ad01e", "migrations_dir": "migrations", "migrations_table": "d1_migrations" }
       ]
     },
     "production": {
       "d1_databases": [
-        { "binding": "DB", "database_name": "PENDENTE", "database_id": "PENDENTE", "migrations_dir": "migrations", "migrations_table": "d1_migrations" }
+        { "binding": "DB", "database_name": "tatame-db", "database_id": "3b3cbeec-5eda-41c6-99e0-2b748e632dc5", "migrations_dir": "migrations", "migrations_table": "d1_migrations" }
       ]
     }
   }
