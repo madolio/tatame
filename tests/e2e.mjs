@@ -348,6 +348,10 @@ await step('agenda: duplicar, aviso de conflito, filtros e teclado', async () =>
   await page.waitForFunction(r => document.querySelector('.ag-range b').textContent !== r, r0); await page.keyboard.press('t');
   await page.waitForFunction(r => document.querySelector('.ag-range b').textContent === r, r0);
   await page.click('.ag-item >> nth=0'); assert.equal(await page.$('[data-act=ag-cancel]'), null, 'cancelar fica oculto até a migração'); await page.click('[data-act=close-sheet]');
+  await shot('18-agenda-desktop-filtros');
+  await page.setViewportSize({ width: 390, height: 860 }); await page.click('[data-act=ag-view][data-v=dia]'); await page.click('.ag-day.is-today'); await shot('19-agenda-celular-hoje');
+  await open(); await page.fill('#ag-form [name=start]', '10:30'); await page.selectOption('#ag-form [name=instr]', staff[0]); await page.fill('#ag-form [name=date]', ago(-3)); await page.waitForSelector('#ag-pre:not([hidden])'); await shot('20-agenda-form-celular');
+  await page.setViewportSize({ width: 1280, height: 900 }); await shot('21-agenda-form-desktop'); await page.click('[data-act=close-sheet]');
 });
 
 await step('desktop', async () => {

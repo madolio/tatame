@@ -54,7 +54,8 @@
 @media (prefers-reduced-motion: no-preference) { [data-k=live] .ag-pill i { animation: agpulse 1.6s ease-in-out infinite; } }
 @keyframes agpulse { 50% { opacity: .35; } }
 @media (max-width: 560px) {
-  .ag-item { grid-template-columns: 56px minmax(0, 1fr); }
+  .ag-item { grid-template-columns: 64px minmax(0, 1fr); gap: 4px 14px; }
+  .ag-time b { font-size: 22px; }
   .ag-state { grid-column: 2; flex-direction: row; align-items: center; justify-content: flex-start; gap: 8px; text-align: left; }
   .ag-name { white-space: normal; }
 }
