@@ -15,7 +15,7 @@ Para quem opera o Tatame e para o administrador da academia. Decisão e justific
    node tools/reset-code.mjs --email admin@academia.com --db NOME_DO_BANCO_D1 --remote
    ```
    `--local` usa o banco de desenvolvimento. É obrigatório informar um dos dois, para não agir em produção por engano.
-3. O script mostra o banco, o nome e a função da conta e pede para você **digitar o e-mail da conta**. Só então gera o código.
+3. O script só roda em terminal interativo (com a saída redirecionada para arquivo ou pipe ele recusa, para o código não ficar gravado). Ele mostra o banco, o nome e a função da conta e pede para você **digitar o e-mail da conta**. Só então gera o código.
 4. O código aparece uma única vez, no formato `XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-X`. Só o hash dele vai para o banco; ninguém consegue consultá-lo depois.
 5. Entregue o código ao administrador **por um canal diferente do que pediu a ajuda** (por exemplo, pediu por e-mail, entregue por telefone ou WhatsApp conhecido). Não o escreva em chamados, planilhas ou conversas de grupo.
 
@@ -33,9 +33,11 @@ Mensagens possíveis: *código inválido* (também aparece para e-mail errado, d
 
 - Código de 130 bits gerado com `crypto.randomBytes`; banco guarda só `SHA-256(conta + código)`.
 - Comparação em tempo constante; 30 minutos de validade; consumo atômico (duas requisições simultâneas não usam o mesmo código).
-- 5 erros contra um código o invalidam; além disso valem os limites de 8 tentativas por par (e-mail, IP) e 30 por IP em 15 minutos.
+- Erros de outras pessoas **não** invalidam o código (antes, 5 erros o queimavam e quem só sabia o e-mail atrapalhava o dono). Adivinhar 130 bits é inviável; quem limita é o contador de 8 tentativas por par (e-mail, rede) e 30 por rede em 15 minutos (IPv6 agrupado por /64).
+- O código deixa de valer quando é usado, quando vence, quando um novo é gerado, quando a senha da conta é trocada (pela própria pessoa ou pelo administrador) e quando a conta é desativada.
+- A redefinição é um único batch (senha, fim das sessões, auditoria e consumo do código): se algo falhar, nada muda e o mesmo código continua valendo.
 - A resposta não revela se o e-mail existe nem se há código pendente.
-- Eventos `reset_issued`, `reset_failed` e `reset_used` ficam em `audit_log`, sem código nem senha. Consulta:
+- Eventos `reset_issued`, `reset_used` e `reset_failed` (este uma vez por limite atingido, não a cada erro) ficam em `audit_log`, sem código nem senha. Consulta:
   ```
   node node_modules/wrangler/bin/wrangler.js d1 execute NOME_DO_BANCO_D1 --remote --command "SELECT at, event, staff_id, detail FROM audit_log ORDER BY id DESC LIMIT 20"
   ```

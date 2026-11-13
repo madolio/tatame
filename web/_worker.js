@@ -261,7 +261,8 @@ const GHOST_SALT = 'dGF0YW1lLWdob3N0LXNhbHQ=';
 // ---------- recuperação de senha por código ----------
 // Duas responsabilidades separadas: (1) VALIDAR um código de uso único (aqui) e (2) ENTREGÁ-LO. Hoje a entrega é manual
 // (tools/reset-code.mjs gera o código, grava só o hash e o operador o repassa). Um envio por e-mail futuro troca apenas a entrega.
-const RESET_MAX_ATTEMPTS = 5;
+// V11: erros de terceiros NÃO mexem no código (antes, 5 erros o invalidavam: quem só sabia o e-mail queimava o código do
+// dono). Adivinhar 130 bits é inviável; quem limita tentativas são os contadores por (e-mail, rede) e por rede.
 const normalizeResetCode = c => String(c || '').toUpperCase().replace(/O/g, '0').replace(/[IL]/g, '1').replace(/[^0-9A-Z]/g, '');
 const resetCodeHash = (staffId, code) => sha256('tatame-reset:' + staffId + ':' + normalizeResetCode(code));
 const audit = (db, event, staffId, detail) => db.prepare('INSERT INTO audit_log (event, staff_id, detail) VALUES (?, ?, ?)').bind(event, staffId || null, detail || null);
@@ -786,34 +787,45 @@ async function route(req, env, url, ctx) {
 
   if (path === '/api/reset' && method === 'POST') {
     const b = await body();
-    const email = String(b.email || '').trim().toLowerCase(), code = normalizeResetCode(b.code);
-    const ip = req.headers.get('cf-connecting-ip') || 'local';
-    const pairKey = 'reset:email:' + email + '|ip:' + ip, ipKey = 'reset:ip:' + ip;
+    const email = String(b.email || '').trim().toLowerCase().slice(0, 120), code = normalizeResetCode(b.code);
+    const net = networkOf(req.headers.get('cf-connecting-ip'));   // mesma regra do login: IPv4 inteiro, IPv6 por /64
+    const pairKey = 'reset:email:' + email + '|ip:' + net, ipKey = 'reset:ip:' + net;
     if (await rateLimited(db, [[pairKey, LOGIN_LIMITS.pair], [ipKey, LOGIN_LIMITS.ip]])) throw new HttpError(429, 'Muitas tentativas. Aguarde 15 minutos e tente de novo.');
     const newPw = checkPassword(b.password, { email });
     if (b.password_confirm !== undefined && b.password_confirm !== newPw) bad('As senhas não conferem.');
-    const fail = async (staffId, why) => {
-      const st = [db.prepare('INSERT INTO login_attempts (key) VALUES (?)').bind(pairKey), db.prepare('INSERT INTO login_attempts (key) VALUES (?)').bind(ipKey),
-        db.prepare("DELETE FROM login_attempts WHERE at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 hour')")];
-      if (staffId) st.push(db.prepare('UPDATE password_resets SET attempts = attempts + 1 WHERE staff_id = ? AND used_at IS NULL').bind(staffId), audit(db, 'reset_failed', staffId, why));
-      await db.batch(st);
+    // Erro: só os contadores de tentativa. O código do dono NÃO muda. reset_failed é gravado uma vez, quando ESTE erro atinge
+    // um limite (como login_locked), e não a cada tentativa (que deixaria qualquer um encher a auditoria).
+    const fail = async staffId => {
+      const c = await first(db, "SELECT (SELECT count(*) FROM login_attempts WHERE key = ? AND at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-15 minutes')) p, (SELECT count(*) FROM login_attempts WHERE key = ? AND at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-15 minutes')) i", pairKey, ipKey);
+      const reached = [...(c.p + 1 === LOGIN_LIMITS.pair ? ['par'] : []), ...(c.i + 1 === LOGIN_LIMITS.ip ? ['rede'] : [])];
+      await db.batch([db.prepare('INSERT INTO login_attempts (key) VALUES (?)').bind(pairKey), db.prepare('INSERT INTO login_attempts (key) VALUES (?)').bind(ipKey),
+        db.prepare("DELETE FROM login_attempts WHERE at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 hour')"),
+        ...(reached.length ? [audit(db, 'reset_failed', staffId || null, JSON.stringify({ limites: reached, rede: net }))] : [])]);
     };
     const s = await first(db, 'SELECT id FROM staff WHERE email = ? AND active = 1', email);
     const pr = s ? await first(db, 'SELECT * FROM password_resets WHERE staff_id = ?', s.id) : null;
     const given = await resetCodeHash(s ? s.id : 'none', code);
     const match = !!pr && code.length >= 20 && safeEqual(given, pr.code_hash);
     // Mensagem genérica enquanto o código não confere: não revela se o e-mail existe nem se há código pendente.
-    if (!match || pr.attempts >= RESET_MAX_ATTEMPTS) { await fail(s && pr ? s.id : null, match ? 'bloqueado por tentativas' : 'código incorreto'); throw new HttpError(400, RESET_BAD); }
+    if (!match) { await fail(s && pr ? s.id : null); throw new HttpError(400, RESET_BAD); }
     if (pr.used_at) throw new HttpError(400, 'Este código já foi utilizado. Peça um novo código.');
     if (Date.parse(pr.expires_at) <= Date.now()) throw new HttpError(400, 'Este código expirou. Peça um novo código.');
-    // Consumo atômico: só uma requisição consegue marcar o código como usado.
-    const claim = await run(db, "UPDATE password_resets SET used_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE staff_id = ? AND used_at IS NULL", s.id);
-    if (!claim.meta || claim.meta.changes !== 1) throw new HttpError(400, 'Este código já foi utilizado. Peça um novo código.');
+    // Consumo atômico e sem estado parcial (antes: o código era marcado como usado num comando separado, ANTES da senha; se a
+    // gravação da senha falhasse, o dono perdia o código sem ter redefinido nada). Agora é um único batch: cada comando só age
+    // se o código ainda está pendente, válido e com este hash, e o consumo é o ÚLTIMO comando. Uma segunda requisição
+    // (simultânea ou repetida) encontra o código já usado e não muda nada. Falha em qualquer comando: rollback, código intacto.
     const { hash, salt } = await hashPassword(newPw);
-    await db.batch([db.prepare('UPDATE staff SET pass_hash = ?, pass_salt = ? WHERE id = ?').bind(hash, salt, s.id),
-      db.prepare('DELETE FROM auth_sessions WHERE staff_id = ?').bind(s.id),
-      db.prepare('DELETE FROM login_attempts WHERE key = ? OR key = ?').bind(pairKey, 'email:' + email + '|ip:' + ip),
-      audit(db, 'reset_used', s.id, 'senha redefinida; sessões encerradas')]);
+    const nowIso = new Date().toISOString();
+    const pending = 'EXISTS (SELECT 1 FROM password_resets WHERE staff_id = ? AND code_hash = ? AND used_at IS NULL AND expires_at > ?)';
+    const P = [s.id, given, nowIso];
+    const res = await db.batch([
+      db.prepare(`UPDATE staff SET pass_hash = ?, pass_salt = ? WHERE id = ? AND active = 1 AND ${pending}`).bind(hash, salt, s.id, ...P),
+      db.prepare(`DELETE FROM auth_sessions WHERE staff_id = ? AND ${pending}`).bind(s.id, ...P),
+      db.prepare(`DELETE FROM login_attempts WHERE (key = ? OR key = ?) AND ${pending}`).bind(pairKey, 'email:' + email + '|ip:' + net, ...P),
+      db.prepare(`INSERT INTO audit_log (event, staff_id, detail) SELECT 'reset_used', ?, 'senha redefinida; sessões encerradas' WHERE ${pending}`).bind(s.id, ...P),
+      db.prepare("UPDATE password_resets SET used_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE staff_id = ? AND code_hash = ? AND used_at IS NULL AND expires_at > ?").bind(...P)
+    ]);
+    if (res?.[4]?.meta?.changes !== 1) throw new HttpError(400, 'Este código já foi utilizado. Peça um novo código.');
     return json({ ok: true });
   }
 
@@ -1068,7 +1080,9 @@ async function route(req, env, url, ctx) {
     const stmts = [db.prepare('UPDATE staff SET name=?, role=?, belt=?, active=? WHERE id=?').bind(str(b.name ?? ex.name, { min: 2, max: 80, field: 'Nome', required: true }), role, oneOf(b.belt, BELTS, 'Faixa', null), active, ex.id)];
     // Senha definida pelo administrador: no mesmo batch, fim das sessões da pessoa, códigos de recuperação pendentes e auditoria.
     if (b.password) { const { hash, salt } = await hashPassword(checkPassword(b.password, { email: ex.email, name: b.name ?? ex.name })); stmts.push(db.prepare('UPDATE staff SET pass_hash=?, pass_salt=? WHERE id=?').bind(hash, salt, ex.id), db.prepare('DELETE FROM auth_sessions WHERE staff_id = ?').bind(ex.id), db.prepare('DELETE FROM password_resets WHERE staff_id = ?').bind(ex.id), audit(db, 'staff_password_reset', me.id, JSON.stringify({ conta: ex.id, sessoes_encerradas: true, codigos_de_recuperacao_invalidados: true }))); }
-    if (!active) stmts.push(db.prepare('DELETE FROM auth_sessions WHERE staff_id = ?').bind(ex.id));
+    // Desativar: sessões caem e códigos de recuperação pendentes são apagados (senão voltariam a valer se a conta fosse
+    // reativada dentro dos 30 minutos). Mesmo batch da desativação.
+    if (!active) stmts.push(db.prepare('DELETE FROM auth_sessions WHERE staff_id = ?').bind(ex.id), db.prepare('DELETE FROM password_resets WHERE staff_id = ?').bind(ex.id));
     await db.batch(stmts);
     return json(await first(db, 'SELECT id, name, email, role, belt, active FROM staff WHERE id = ?', ex.id));
   }

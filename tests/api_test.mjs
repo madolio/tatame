@@ -282,16 +282,16 @@ ok(csvBefore.split('\r\n').slice(0, 2).every(l => csv.body.includes(l)), 'CSV se
 
   const c2 = issue(B);
   for (let i = 0; i < 5; i++) await reset('recb@x.com', RC.generateCode(), 'senhanova123', '198.51.100.' + (20 + i));
-  ok(DB.raw.prepare('SELECT attempts FROM password_resets WHERE staff_id = ?').get(B).attempts === 5, 'recuperação: erros contra o código ficam contados');
-  const locked = await reset('recb@x.com', c2, 'senhanova123', '198.51.100.40');
-  ok(locked.status === 400 && locked.body.error === wrong.body.error, 'recuperação: após 5 erros nem o código certo é aceito');
+  // V11 (6.3-C): erros de terceiros não mexem no código; antes, 5 erros o invalidavam e o dono perdia o código.
+  ok(DB.raw.prepare('SELECT attempts, used_at FROM password_resets WHERE staff_id = ?').get(B).attempts === 0, 'recuperação: erros de terceiros não alteram o código pendente');
+  ok((await reset('recb@x.com', c2, 'senhanova123', '198.51.100.40')).status === 200, 'recuperação: depois de 5 erros de terceiros, o dono usa o código certo normalmente');
   const c3 = issue(B);
-  ok((await reset('recb@x.com', c3, 'senhanova123', '198.51.100.41')).status === 200, 'recuperação: um código novo zera as tentativas e funciona');
+  ok((await reset('recb@x.com', c3, 'senhanova124', '198.51.100.41')).status === 200, 'recuperação: um código novo funciona');
   let st429 = 0; for (let i = 0; i < 9; i++) st429 = (await reset('alvo@x.com', RC.generateCode(), 'senhanova123', '192.0.2.99')).status;
   ok(st429 === 429, 'recuperação: muitas tentativas do mesmo IP recebem 429');
 
   const ev = DB.raw.prepare('SELECT event, count(*) n FROM audit_log GROUP BY event').all().reduce((o, r) => (o[r.event] = r.n, o), {});
-  ok(ev.reset_issued >= 4 && ev.reset_used === 2 && ev.reset_failed >= 6, `recuperação: eventos registrados (${JSON.stringify(ev)})`);
+  ok(ev.reset_issued >= 4 && ev.reset_used === 3 && ev.reset_failed >= 1, `recuperação: eventos registrados (${JSON.stringify(ev)})`);
   const dump = JSON.stringify(['password_resets', 'audit_log', 'login_attempts', 'staff', 'auth_sessions', 'settings'].map(t => DB.raw.prepare(`SELECT * FROM ${t}`).all()));
   const secrets = [code, c2, c3, old].flatMap(c => [c, c.replace(/-/g, '')]);
   ok(secrets.every(s => !dump.includes(s)), 'recuperação: nenhum código aparece em texto puro no banco');
