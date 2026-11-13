@@ -306,5 +306,6 @@ ok(csvBefore.split('\r\n').slice(0, 2).every(l => csv.body.includes(l)), 'CSV se
 
 // Agenda V1: roda junto da suíte da API (package.json não é alterado nesta branch; ver docs/agenda.md).
 await import('./agenda.mjs');
+await import('./agenda_cancel.mjs');
 
 console.log('\nTODOS OS TESTES DA API PASSARAM');

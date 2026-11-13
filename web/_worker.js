@@ -298,7 +298,8 @@ const STUDENT_EDIT_FIELDS = ['name', 'nickname', 'birth_date', 'sex', 'phone', '
 const CLASS_EDIT_FIELDS = ['name', 'weekday', 'start_time', 'end_time', 'level', 'modality', 'instructor_id', 'active'];
 const TECH_EDIT_FIELDS = ['name', 'category', 'min_belt', 'difficulty', 'description', 'active'];
 const DENY_ACTIONS = ['student_delete', 'student_graduation_fix', 'promotion_undo', 'lesson_update', 'lesson_delete', 'class_delete',
-  'technique_create', 'technique_update', 'technique_delete', 'rules_update', 'settings_update', 'staff_create', 'staff_update', 'students_export'];
+  'technique_create', 'technique_update', 'technique_delete', 'rules_update', 'settings_update', 'staff_create', 'staff_update', 'students_export',
+  'lesson_cancel', 'agenda_holiday'];
 const TARGET_ID = { staff: AUD_ID, student: AUD_ID, lesson: AUD_ID, promotion: AUD_ID, class: AUD_ID, technique: v => typeof v === 'string' && /^\d{1,10}$/.test(v),
   rules: v => v === null, settings: AUD_ONE('academy_name'), export: AUD_ONE('alunos.csv') };
 const PROMO = { aluno: AUD_ID, tipo: AUD_ONE('grau', 'faixa'), de_faixa: AUD_ONE(...BELTS), de_graus: AUD_INT(0, 6), para_faixa: AUD_ONE(...BELTS), para_graus: AUD_INT(0, 6) };
@@ -317,6 +318,9 @@ const AUDIT_EVENTS = {
     modality: AUD_ONE('gi', 'nogi', 'livre'), instructor_id: AUD_NULL(AUD_ID), roll_called: AUD_NULL(AUD_ONE(0, 1)),
     student_ids: AUD_LIST(AUD_ID, LESSON_STUDENTS_MAX), technique_ids: AUD_LIST(AUD_INT(1, 1e9), LESSON_TECHS_MAX) }) } },
   lesson_deleted: { target: ['lesson'], outcomes: ['ok'], legacy: 'actor', max: 300000, detail: { lesson_id: AUD_ID, before: AUD_LESSON } },
+  // ----- Agenda V1: cancelamento/feriado e restauração. SEM o motivo (texto livre fica só em agenda_exceptions). -----
+  lesson_cancelled: { target: ['lesson', 'class', null], outcomes: ['ok'], detail: { excecao: AUD_ID, tipo: AUD_ONE('cancel', 'holiday'), data: isDate, turma: AUD_NULL(AUD_ID), aula: AUD_NULL(AUD_ID) } },
+  lesson_restored: { target: ['lesson', 'class', null], outcomes: ['ok'], detail: { excecao: AUD_ID, tipo: AUD_ONE('cancel', 'holiday'), data: isDate, turma: AUD_NULL(AUD_ID), aula: AUD_NULL(AUD_ID) } },
   // ----- novos (6.4-C): staff_id NULL -----
   setup_completed: { target: ['staff'], outcomes: ['ok'], detail: { papel: AUD_ONE('admin') } },
   logout: { target: ['staff'], outcomes: ['ok'] },
@@ -664,6 +668,18 @@ async function lessonSnapshot(db, id) {
   return l;
 }
 
+// Agenda V1: cancelamento, feriado e reposição vivem em agenda_exceptions (proposta de migração 004, docs/agenda-migracao-004/).
+// Enquanto a tabela não existir o recurso fica desligado (rotas respondem 501, a agenda funciona como antes). Só o "sim" é lembrado.
+const agExtSeen = new WeakSet();
+async function hasAgendaExt(db) {
+  if (agExtSeen.has(db)) return true;
+  const r = await first(db, "SELECT 1 x FROM sqlite_master WHERE type = 'table' AND name = 'agenda_exceptions'");
+  if (r) agExtSeen.add(db);
+  return !!r;
+}
+const activeException = (db, lessonId, classId, date) => first(db, `SELECT * FROM agenda_exceptions WHERE restored_at IS NULL AND (
+  (lesson_id IS NOT NULL AND lesson_id = ?) OR (lesson_id IS NULL AND class_id IS NOT NULL AND class_id = ? AND date = ?) OR (kind = 'holiday' AND date = ?)) LIMIT 1`, lessonId || '', classId || '', date, date);
+
 const instructorExists = async (db, id) => { if (id && !(await first(db, 'SELECT id FROM staff WHERE id = ?', id))) bad('Instrutor não encontrado.'); };
 
 async function saveLesson(db, staff, b, id) {
@@ -674,6 +690,7 @@ async function saveLesson(db, staff, b, id) {
   // Edição: o estado anterior vem do banco (nunca do cliente) e vai para a auditoria no mesmo batch da alteração.
   const before = id ? await lessonSnapshot(db, id) : null;
   if (id && !before) throw new HttpError(404, 'Aula não encontrada.');
+  const ext = await hasAgendaExt(db);
   const cls = classIn ? await first(db, 'SELECT * FROM classes WHERE id = ?', classIn) : null;
   if (classIn && !cls) bad('Turma não encontrada.');
   const o = {
@@ -709,7 +726,8 @@ async function saveLesson(db, staff, b, id) {
   const deliberate = !!(instructorIn || (cls && cls.instructor_id));
   const moved = !!before && (before.date !== o.date || before.start_time !== o.start_time || before.end_time !== o.end_time || before.instructor_id !== o.instructor_id);
   if (o.instructor_id && (before ? moved : deliberate)) {
-    const clash = await first(db, 'SELECT start_time, end_time FROM lessons WHERE instructor_id = ? AND date = ? AND id <> ? AND start_time < ? AND end_time > ? ORDER BY start_time LIMIT 1', o.instructor_id, o.date, id || '', o.end_time, o.start_time);
+    const live = ext ? ' AND NOT EXISTS (SELECT 1 FROM agenda_exceptions x WHERE x.lesson_id = lessons.id AND x.restored_at IS NULL)' : '';   // aula cancelada não ocupa o professor
+    const clash = await first(db, 'SELECT start_time, end_time FROM lessons WHERE instructor_id = ? AND date = ? AND id <> ? AND start_time < ? AND end_time > ?' + live + ' ORDER BY start_time LIMIT 1', o.instructor_id, o.date, id || '', o.end_time, o.start_time);
     if (clash) throw new HttpError(409, `O professor já tem aula neste dia, das ${clash.start_time} às ${clash.end_time}.`);
   }
   // D6: marcador de chamada. Com presentes a chamada foi feita. Sem presentes: o valor informado (true = chamada feita, ninguém veio;
@@ -719,6 +737,9 @@ async function saveLesson(db, staff, b, id) {
   const roll = studentIds.length ? 1 : rollIn !== null ? rollIn : id ? before.roll_called : 0;
   // Presença é um fato que já aconteceu: aula futura não aceita chamada.
   if (o.date > todayStr() && (studentIds.length || roll === 1)) bad('Aula futura não pode ter chamada.');
+  // Aula cancelada (ou dia de feriado) não recebe chamada: restaurar primeiro. Presença já registrada nunca é apagada por isso.
+  const realized = !!before && (before.roll_called === 1 || before.student_ids.length > 0);   // aula já realizada: corrigir a chamada nunca é bloqueado
+  if ((studentIds.length || roll === 1) && ext && !realized && await activeException(db, id, o.class_id, o.date)) throw new HttpError(409, 'Esta aula está cancelada. Restaure a aula antes de registrar a chamada.');
   const stmts = [];
   if (id) {
     stmts.push(db.prepare('UPDATE lessons SET class_id=?, date=?, start_time=?, end_time=?, modality=?, title=?, notes=?, instructor_id=?, roll_called=? WHERE id=?')
@@ -743,7 +764,12 @@ async function saveLesson(db, staff, b, id) {
   if (studentIds.length && techIds.length) stmts.push(db.prepare(`INSERT INTO skills (student_id, technique_id, level, updated_by)
       SELECT s.value, t.value, 1, ? FROM json_each(?) s, json_each(?) t WHERE true
       ON CONFLICT (student_id, technique_id) DO UPDATE SET level = 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), updated_by = excluded.updated_by WHERE skills.level < 1`).bind(staff.id, sJson, tJson));
-  await db.batch(stmts);
+  try { await db.batch(stmts); }
+  catch (e) {
+    // Trava do banco (migração 004): uma requisição simultânea ocupou o professor entre a conferência acima e a gravação.
+    if (/conflito_professor/.test(String(e && e.message))) throw new HttpError(409, 'O professor já tem aula neste horário.');
+    throw e;
+  }
   return id;
 }
 
@@ -772,14 +798,29 @@ async function agenda(db, from, to) {
     }
   }
   items.sort((a, b) => a.date.localeCompare(b.date) || a.start_time.localeCompare(b.start_time) || a.end_time.localeCompare(b.end_time));
-  // Conflito: o mesmo professor em duas aulas que se sobrepõem no mesmo dia.
+  // Cancelamentos, feriados e reposições (só com a migração 004). Aula que já tem chamada continua "realizada": a presença prevalece.
+  const ext = await hasAgendaExt(db);
+  if (ext) {
+    const exc = await all(db, 'SELECT * FROM agenda_exceptions WHERE restored_at IS NULL AND date BETWEEN ? AND ?', from, to);
+    const byLesson = new Map(exc.filter(x => x.lesson_id).map(x => [x.lesson_id, x])), byClass = new Map(exc.filter(x => !x.lesson_id && x.class_id).map(x => [x.class_id + '|' + x.date, x]));
+    const holiday = new Map(exc.filter(x => x.kind === 'holiday').map(x => [x.date, x]));
+    const makeups = new Map((await all(db, `SELECT makeup_lesson_id, date FROM agenda_exceptions WHERE makeup_lesson_id IS NOT NULL AND restored_at IS NULL
+      AND makeup_lesson_id IN (SELECT id FROM lessons WHERE date BETWEEN ? AND ?)`, from, to)).map(x => [x.makeup_lesson_id, x.date]));
+    for (const it of items) {
+      const realized = it.kind === 'lesson' && (it.roll_called === 1 || it.attendees > 0);
+      const x = !realized && ((it.id && byLesson.get(it.id)) || (!it.id && byClass.get(it.class_id + '|' + it.date)) || holiday.get(it.date));
+      if (x) { it.status = 'cancelled'; it.cancel_kind = x.kind; it.cancel_reason = x.reason; it.exception_id = x.id; if (x.makeup_lesson_id) it.makeup_lesson_id = x.makeup_lesson_id; }
+      if (it.id && makeups.has(it.id)) it.makeup_of_date = makeups.get(it.id);
+    }
+  }
+  // Conflito: o mesmo professor em duas aulas que se sobrepõem no mesmo dia (aula cancelada não ocupa o professor).
   const byDay = new Map();
-  for (const it of items) if (it.instructor_id) { const k = it.date + '|' + it.instructor_id; if (!byDay.has(k)) byDay.set(k, []); byDay.get(k).push(it); }
+  for (const it of items) if (it.instructor_id && it.status !== 'cancelled') { const k = it.date + '|' + it.instructor_id; if (!byDay.has(k)) byDay.set(k, []); byDay.get(k).push(it); }
   for (const arr of byDay.values()) for (let i = 0; i < arr.length; i++) for (let j = i + 1; j < arr.length; j++)
     if (arr[i].start_time < arr[j].end_time && arr[j].start_time < arr[i].end_time) arr[i].conflict = arr[j].conflict = true;
   const regulars = {};
   for (const r of regs) { const a = regulars[r.class_id] || (regulars[r.class_id] = []); if (a.length < 40) a.push(r.student_id); }
-  return { from, to, today, items, regulars };
+  return { from, to, today, items, regulars, capabilities: { cancel: ext } };
 }
 
 async function lessonOut(db, id) {
@@ -1221,6 +1262,83 @@ async function route(req, env, url, ctx) {
     if (!isDate(from) || !isDate(to) || to < from) bad('Período inválido.');
     if (dnum(to) - dnum(from) >= AGENDA_MAX_DAYS) bad(`A agenda mostra no máximo ${AGENDA_MAX_DAYS} dias por vez.`);
     return json(await agenda(db, from, to));
+  }
+  // Cancelamento, feriado e reposição (Agenda V1, depende da migração 004: sem a tabela, 501). Nada é apagado: cancelar grava uma exceção
+  // à parte; restaurar a encerra (o registro fica). Regras de acesso REUSADAS: aula gravada = autor + prazo ou admin (como editar/excluir
+  // chamada); turma da grade e feriado = só admin (como editar horários).
+  if (path === '/api/agenda/exceptions' || /^\/api\/agenda\/exceptions\/[0-9a-f-]{36}\/(restore|makeup)$/.test(path)) {
+    if (method !== 'POST') throw new HttpError(405, 'Método não permitido.');
+    if (!(await hasAgendaExt(db))) throw new HttpError(501, 'Cancelamento de aulas ainda não está disponível nesta instalação.');
+    const noDup = e => { if (/UNIQUE|FOREIGN KEY/.test(String(e && e.message))) throw new HttpError(409, 'Esta aula já está cancelada ou mudou. Atualize a agenda.'); if (/conflito_professor/.test(String(e && e.message))) throw new HttpError(409, 'O professor já tem aula neste horário.'); throw e; };
+    const evFields = x => ({ excecao: x.id, tipo: x.kind, data: x.date, turma: x.class_id, aula: x.lesson_id });
+    const evTarget = x => x.lesson_id ? ['lesson', x.lesson_id] : x.class_id ? ['class', x.class_id] : null;
+    // Quem pode agir sobre uma exceção existente (restaurar, marcar reposição).
+    const guard = async x => {
+      if (x.kind === 'holiday') return admin('agenda_holiday');
+      if (!x.lesson_id) return admin('lesson_cancel', ['class', x.class_id]);
+      const l = await first(db, 'SELECT id, created_by, created_at FROM lessons WHERE id = ?', x.lesson_id);
+      if (!l) throw new HttpError(404, 'Aula não encontrada.');
+      return ownRecent(l.created_by, l.created_at, 'aulas', 'lesson_cancel', ['lesson', l.id]);
+    };
+    if (path === '/api/agenda/exceptions') {
+      const b = await body();
+      const kind = oneOf(b.kind, ['cancel', 'holiday'], 'Tipo', null) || bad('Escolha cancelar a aula ou marcar feriado.');
+      // Aula gravada: a data vem da própria aula. Turma da grade e feriado: data obrigatória.
+      let day = kind === 'cancel' && b.lesson_id ? null : date(b.date, 'Data', true, { future: true });
+      if (day && day > addDays(todayStr(), AGENDA_AHEAD_DAYS)) bad('A data está longe demais no futuro.');
+      const reason = str(b.reason, { min: 3, max: 200, field: 'Motivo', required: true });
+      let classId = null, lessonId = null;
+      if (kind === 'holiday') await admin('agenda_holiday');
+      else if (b.lesson_id) {
+        lessonId = idOf(b.lesson_id, 'Aula', true);
+        const l = await first(db, 'SELECT id, class_id, date, created_by, created_at, roll_called, (SELECT count(*) FROM attendance a WHERE a.lesson_id = lessons.id) n FROM lessons WHERE id = ?', lessonId);
+        if (!l) throw new HttpError(404, 'Aula não encontrada.');
+        await ownRecent(l.created_by, l.created_at, 'aulas', 'lesson_cancel', ['lesson', l.id]);
+        if (l.n > 0 || l.roll_called === 1) throw new HttpError(409, 'Esta aula já tem chamada. Corrija a chamada em vez de cancelar: a presença registrada é preservada.');
+        classId = l.class_id; day = l.date;
+      } else {
+        classId = idOf(b.class_id, 'Turma', true);
+        await admin('lesson_cancel', ['class', classId]);
+        const c = await first(db, 'SELECT id, weekday FROM classes WHERE id = ? AND active = 1', classId);
+        if (!c) throw new HttpError(404, 'Turma não encontrada.');
+        if (c.weekday !== new Date(day + 'T00:00:00Z').getUTCDay()) bad('Esta turma não tem aula neste dia da semana.');
+        if (await first(db, 'SELECT id FROM lessons WHERE class_id = ? AND date = ?', classId, day)) throw new HttpError(409, 'Esta aula já está gravada na agenda. Cancele-a pela própria aula.');
+      }
+      const x = { id: uuid(), kind, date: day, class_id: classId, lesson_id: lessonId };
+      try {
+        await db.batch([db.prepare('INSERT INTO agenda_exceptions (id, kind, date, class_id, lesson_id, reason, created_by) VALUES (?,?,?,?,?,?,?)').bind(x.id, kind, day, classId, lessonId, reason, me.id),
+          audit(db, 'lesson_cancelled', { actor: me.id, target: evTarget(x), detail: evFields(x) })]);
+      } catch (e) { noDup(e); }
+      return json({ ...x, reason, status: 'cancelled' }, 201);
+    }
+    const [, xid, what] = path.match(/^\/api\/agenda\/exceptions\/([0-9a-f-]{36})\/(restore|makeup)$/);
+    const x = await first(db, 'SELECT * FROM agenda_exceptions WHERE id = ?', xid);
+    if (!x) throw new HttpError(404, 'Cancelamento não encontrado.');
+    if (x.restored_at) throw new HttpError(409, 'Esta aula já foi restaurada.');
+    await guard(x);
+    if (what === 'restore') {
+      try {
+        await db.batch([audit(db, 'lesson_restored', { actor: me.id, target: evTarget(x), detail: evFields(x) }, { where: 'EXISTS (SELECT 1 FROM agenda_exceptions WHERE id = ? AND restored_at IS NULL)', params: [x.id] }),
+          db.prepare("UPDATE agenda_exceptions SET restored_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), restored_by = ? WHERE id = ? AND restored_at IS NULL").bind(me.id, x.id)]);
+      } catch (e) { noDup(e); }
+      return json({ ok: true });
+    }
+    // Reposição: uma aula nova (sem chamada) ligada ao cancelamento. Um cancelamento tem no máximo uma reposição.
+    if (x.kind !== 'cancel') bad('Reposição só vale para uma aula cancelada, não para feriado.');
+    if (x.makeup_lesson_id) throw new HttpError(409, 'Este cancelamento já tem uma reposição marcada.');
+    const b = await body();
+    const src = x.lesson_id ? await first(db, 'SELECT class_id, start_time, end_time, modality, title, instructor_id FROM lessons WHERE id = ?', x.lesson_id) : null;
+    const cls = x.class_id ? await first(db, 'SELECT id, name, weekday, start_time, end_time, modality, instructor_id FROM classes WHERE id = ?', x.class_id) : null;
+    const base = src || cls || {};
+    const day = date(b.date, 'Data da reposição', true, { future: true });
+    if (day < todayStr()) bad('A reposição precisa ser hoje ou em uma data futura.');
+    // Com a turma: ajuda "costumam vir"; mas no dia da semana da própria turma a aula já existe na grade, então vai sem turma.
+    const keepClass = cls && cls.weekday !== new Date(day + 'T00:00:00Z').getUTCDay() ? cls.id : null;
+    const id = await saveLesson(db, me, { class_id: keepClass, date: day, start_time: b.start_time || base.start_time, end_time: b.end_time || base.end_time,
+      modality: b.modality || base.modality, instructor_id: b.instructor_id || base.instructor_id || null,
+      title: b.title || `Reposição: ${(cls && cls.name) || (src && src.title) || 'aula'}`.slice(0, 120), student_ids: [], technique_ids: [] }, null);
+    await run(db, 'UPDATE agenda_exceptions SET makeup_lesson_id = ? WHERE id = ? AND makeup_lesson_id IS NULL AND restored_at IS NULL', id, x.id);
+    return json(await lessonOut(db, id), 201);
   }
   if (path === '/api/lessons' && method === 'GET') {
     const from = url.searchParams.get('from') || addDays(todayStr(), -60), to = url.searchParams.get('to') || todayStr();

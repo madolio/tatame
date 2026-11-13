@@ -65,6 +65,8 @@ const T = [
   ['DELETE', `/api/classes/${cls.id}`, null, [401, 403, 'ok']],
   ['GET', `/api/agenda?from=${ago(3)}&to=${ago(0)}`, null, [401, 'ok', 'ok']],
   ['GET', '/api/agenda', null, [401, 400, 400]],
+  // Cancelamento: sem a migração 004 o recurso está desligado (501 para quem está logado; anônimo continua 401). Regras com a tabela: tests/agenda_cancel.mjs.
+  ['POST', '/api/agenda/exceptions', {}, [401, 501, 501]],
   ['GET', '/api/agenda?from=2026-01-01&to=2026-12-31', null, [401, 400, 400]],
   ['GET', '/api/lessons', null, [401, 'ok', 'ok']],
   ['POST', '/api/lessons', { date: ago(1), start_time: '10:00', end_time: '11:00', student_ids: [] }, [401, 'ok', 'ok']],
