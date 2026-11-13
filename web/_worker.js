@@ -202,6 +202,7 @@ async function currentStaff(req, db, ctx = {}) {
 // (a resposta não pode revelar se o e-mail existe). Para não deixar um estranho trancar o dono, quem apresenta o cookie de
 // aparelho conhecido daquela conta não passa pelo limite da conta (os limites por par e por rede continuam valendo).
 const LOGIN_LIMITS = { pair: 8, ip: 30, account: 20 };
+const PW_CHANGE_MAX = 5;   // V9: conferências da senha atual em /api/me/password por conta em 15 min
 // Rede da origem: IPv4 = endereço inteiro; IPv6 = prefixo /64 (um cliente costuma receber a /64 inteira e trocar de endereço
 // à vontade dentro dela); IPv4 mapeado em IPv6 (::ffff:a.b.c.d) = IPv4. Sem cabeçalho ou com valor inválido: uma chave única
 // compartilhada por todos nessa condição (falha fechada: não vira "sem limite"). O cf-connecting-ip é definido pela Cloudflare.
@@ -837,14 +838,37 @@ async function route(req, env, url, ctx) {
   let m;
 
   if (path === '/api/me' && method === 'GET') return json({ me, settings: await getSettings(db) });
+  // V9: troca da própria senha. Limite de PW_CHANGE_MAX conferências da senha atual por conta em 15 min (vale de qualquer IP:
+  // a chave é a conta). Cada tentativa RESERVA a vaga antes de calcular o hash, num único INSERT condicionado (atômico): mesmo
+  // com requisições simultâneas, no máximo PW_CHANGE_MAX conferências acontecem na janela. Senha atual certa zera o contador.
   if (path === '/api/me/password' && method === 'PUT') {
     const b = await body();
     const s = await first(db, 'SELECT * FROM staff WHERE id = ?', me.id);
-    if (!safeEqual((await hashPassword(String(b.current || ''), s.pass_salt)).hash, s.pass_hash)) bad('Senha atual incorreta.');
-    const { hash, salt } = await hashPassword(checkPassword(b.password, { email: s.email, name: s.name }));
-    await db.batch([db.prepare('UPDATE staff SET pass_hash = ?, pass_salt = ? WHERE id = ?').bind(hash, salt, me.id),
-      db.prepare('DELETE FROM auth_sessions WHERE staff_id = ?').bind(me.id)]);
-    return json({ ok: true }, 200, { 'set-cookie': await createSession(db, me.id) });
+    const newPw = checkPassword(b.password, { email: s.email, name: s.name });   // política antes: não gasta vaga nem revela nada
+    const pwKey = 'pwchange:' + me.id;
+    const slot = await run(db, `INSERT INTO login_attempts (key) SELECT ? WHERE (SELECT count(*) FROM login_attempts WHERE key = ? AND at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-15 minutes')) < ?`, pwKey, pwKey, PW_CHANGE_MAX);
+    if (slot.meta?.changes !== 1) throw new HttpError(429, 'Muitas tentativas de troca de senha. Aguarde 15 minutos e tente de novo.');
+    if (!safeEqual((await hashPassword(typeof b.current === 'string' ? b.current : '', s.pass_salt)).hash, s.pass_hash)) {
+      // Uma linha password_change_failed só quando ESTE erro esgota o limite (não uma por tentativa).
+      const used = (await first(db, "SELECT count(*) n FROM login_attempts WHERE key = ? AND at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-15 minutes')", pwKey)).n;
+      if (used === PW_CHANGE_MAX) await audit(db, 'password_change_failed', me.id, JSON.stringify({ tentativas: used, janela_min: 15 })).run();
+      bad('Senha atual incorreta.');
+    }
+    await run(db, 'DELETE FROM login_attempts WHERE key = ?', pwKey);   // senha atual provada: o contador volta a zero
+    // Só depois de provar a senha atual (senão viraria um oráculo para adivinhá-la): a nova precisa ser diferente.
+    if (safeEqual((await hashPassword(newPw, s.pass_salt)).hash, s.pass_hash)) bad('A senha nova precisa ser diferente da atual.');
+    const { hash, salt } = await hashPassword(newPw);
+    const token = hex(crypto.getRandomValues(new Uint8Array(32)));
+    // Tudo ou nada: senha, fim das outras sessões, códigos de recuperação pendentes, contador, auditoria e a sessão nova.
+    await db.batch([
+      db.prepare('UPDATE staff SET pass_hash = ?, pass_salt = ? WHERE id = ?').bind(hash, salt, me.id),
+      db.prepare('DELETE FROM auth_sessions WHERE staff_id = ?').bind(me.id),
+      db.prepare('DELETE FROM password_resets WHERE staff_id = ?').bind(me.id),
+      db.prepare('DELETE FROM login_attempts WHERE key = ?').bind(pwKey),
+      audit(db, 'password_changed', me.id, JSON.stringify({ por: 'propria_conta', sessoes_encerradas: true, codigos_de_recuperacao_invalidados: true })),
+      db.prepare('INSERT INTO auth_sessions (token_hash, staff_id, expires_at) VALUES (?, ?, ?)').bind(await sha256(token), me.id, new Date(Date.now() + SESSION_DAYS * 864e5).toISOString())
+    ]);
+    return json({ ok: true }, 200, { 'set-cookie': sessionCookie(token, SESSION_DAYS * 86400) });
   }
 
   // Estado completo para o app
@@ -1042,7 +1066,8 @@ async function route(req, env, url, ctx) {
     const role = oneOf(b.role, ['admin', 'professor'], 'Função', ex.role), active = flag(b.active, 'Ativo', 1);
     if (ex.id === me.id && (role !== 'admin' || !active)) bad('Você não pode remover seu próprio acesso de administrador.');
     const stmts = [db.prepare('UPDATE staff SET name=?, role=?, belt=?, active=? WHERE id=?').bind(str(b.name ?? ex.name, { min: 2, max: 80, field: 'Nome', required: true }), role, oneOf(b.belt, BELTS, 'Faixa', null), active, ex.id)];
-    if (b.password) { const { hash, salt } = await hashPassword(checkPassword(b.password, { email: ex.email, name: b.name ?? ex.name })); stmts.push(db.prepare('UPDATE staff SET pass_hash=?, pass_salt=? WHERE id=?').bind(hash, salt, ex.id), db.prepare('DELETE FROM auth_sessions WHERE staff_id = ?').bind(ex.id)); }
+    // Senha definida pelo administrador: no mesmo batch, fim das sessões da pessoa, códigos de recuperação pendentes e auditoria.
+    if (b.password) { const { hash, salt } = await hashPassword(checkPassword(b.password, { email: ex.email, name: b.name ?? ex.name })); stmts.push(db.prepare('UPDATE staff SET pass_hash=?, pass_salt=? WHERE id=?').bind(hash, salt, ex.id), db.prepare('DELETE FROM auth_sessions WHERE staff_id = ?').bind(ex.id), db.prepare('DELETE FROM password_resets WHERE staff_id = ?').bind(ex.id), audit(db, 'staff_password_reset', me.id, JSON.stringify({ conta: ex.id, sessoes_encerradas: true, codigos_de_recuperacao_invalidados: true }))); }
     if (!active) stmts.push(db.prepare('DELETE FROM auth_sessions WHERE staff_id = ?').bind(ex.id));
     await db.batch(stmts);
     return json(await first(db, 'SELECT id, name, email, role, belt, active FROM staff WHERE id = ?', ex.id));
