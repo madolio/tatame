@@ -22,6 +22,7 @@ Sistema web para o professor acompanhar os alunos: frequência, chamada, técnic
 - **Sessão:** renova sozinha quando faltam menos de 15 dias, até o teto de 90 dias desde o login.
 - **Recuperação de senha:** professor: o administrador troca em Equipe. Administrador: código de uso único (30 min, só o hash no banco) gerado pelo operador com `tools/reset-code.mjs` e informado na tela de login ("Tenho um código de recuperação"). Procedimento em `docs/recuperacao-de-senha.md`.
 - **Primeiro acesso:** só com código de ativação gerado pelo operador (`tools/setup-code.mjs`; no banco fica só o hash, com validade). Sem código configurado o setup fica fechado; o primeiro administrador e o consumo do código são uma única transação. Procedimento em `docs/nova-instalacao.md`.
+- **Entradas da API:** tipos, identificadores (UUID), datas do calendário e listas são conferidos antes do banco (400 em vez de 500); corpo até 256 KB (413); chamada até 300 alunos e 40 técnicas, até 100 avaliações por vez e 1 regra por faixa. Listas vão ao banco como um único parâmetro JSON (`json_each`), com número de comandos fixo.
 - **Cabeçalhos:** CSP, X-Frame-Options e nosniff. Toda entrada é validada no servidor.
 
 ## Regras de negócio

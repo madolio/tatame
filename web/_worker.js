@@ -42,7 +42,8 @@ const bad = m => { throw new HttpError(400, m); };
 // ---------- utilidades de data (no fuso da academia) ----------
 const TZ = 'America/Sao_Paulo';
 const todayStr = () => new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date());
-const isDate = s => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(Date.parse(s + 'T00:00:00Z'));
+// Dia que existe no calendário: o Date.parse aceita 2024-02-31 (vira 02/03), por isso a ida e volta.
+const isDate = s => { if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false; const t = Date.parse(s + 'T00:00:00Z'); return !isNaN(t) && new Date(t).toISOString().slice(0, 10) === s; };
 const isTime = s => typeof s === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(s);
 const dnum = s => Date.parse(s + 'T00:00:00Z') / 864e5;
 const daysBetween = (a, b) => Math.round(dnum(b) - dnum(a));
@@ -73,19 +74,22 @@ const minutes = t => +t.slice(0, 2) * 60 + +t.slice(3, 5);
 
 // ---------- validação ----------
 const str = (v, { min = 0, max = 200, field = 'campo', required = false } = {}) => {
-  if (v === undefined || v === null || String(v).trim() === '') { if (required) bad(`${field} é obrigatório.`); return null; }
-  const s = String(v).trim();
+  if (v === undefined || v === null || (typeof v === 'string' && v.trim() === '')) { if (required) bad(`${field} é obrigatório.`); return null; }
+  if (typeof v !== 'string') bad(`${field} deve ser texto.`);
+  const s = v.trim();
   if (s.length < min || s.length > max) bad(`${field} deve ter entre ${min} e ${max} caracteres.`);
   return s;
 };
 const int = (v, min, max, field, required = false) => {
   if (v === undefined || v === null || v === '') { if (required) bad(`${field} é obrigatório.`); return null; }
+  if (typeof v !== 'number' && !(typeof v === 'string' && /^\s*-?\d+(\.0+)?\s*$/.test(v))) bad(`${field} deve ser um número inteiro entre ${min} e ${max}.`);
   const n = Number(v);
   if (!Number.isFinite(n) || Math.round(n) !== n || n < min || n > max) bad(`${field} deve ser um número inteiro entre ${min} e ${max}.`);
   return n;
 };
 const real = (v, min, max, field) => {
   if (v === undefined || v === null || v === '') return null;
+  if (typeof v !== 'number' && !(typeof v === 'string' && /^\s*-?\d+([.,]\d+)?\s*$/.test(v))) bad(`${field} deve estar entre ${min} e ${max}.`);
   const n = Number(String(v).replace(',', '.'));
   if (!Number.isFinite(n) || n < min || n > max) bad(`${field} deve estar entre ${min} e ${max}.`);
   return n;
@@ -96,6 +100,17 @@ const date = (v, field, required = false, { future = false } = {}) => {
   if (!future && v > todayStr()) bad(`${field} não pode estar no futuro.`);
   return v;
 };
+// Identificadores das tabelas com chave texto: sempre crypto.randomUUID() (formato UUID). Técnicas usam inteiro (int()).
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const idOf = (v, field, required = false) => {
+  if (v === undefined || v === null || v === '') { if (required) bad(`${field} é obrigatório.`); return null; }
+  if (typeof v !== 'string' || !UUID_RE.test(v)) bad(`${field} inválido.`);
+  return v;
+};
+// Sim/não: booleano (a tela) ou 0/1. Qualquer outra coisa é erro (antes, "false" em texto virava 1).
+const flag = (v, field, def) => { if (v === undefined || v === null) return def; if (v === true || v === 1) return 1; if (v === false || v === 0) return 0; bad(`${field} inválido.`); };
+// Lista opcional: ausente/nula = vazia; objeto ou texto no lugar de lista = erro.
+const list = (v, field) => { if (v === undefined || v === null) return []; if (!Array.isArray(v)) bad(`${field} deve ser uma lista.`); return v; };
 const oneOf = (v, list, field, def) => { if (v === undefined || v === null || v === '') return def; if (!list.includes(v)) bad(`${field} inválido.`); return v; };
 
 // ---------- criptografia ----------
@@ -439,8 +454,8 @@ const CLASS_FIELDS = b => {
     start_time: b.start_time, end_time: b.end_time,
     level: oneOf(b.level, ['todos', 'iniciante', 'intermediario', 'avancado', 'kids', 'competicao'], 'Nível', 'todos'),
     modality: oneOf(b.modality, ['gi', 'nogi', 'livre'], 'Modalidade', 'gi'),
-    instructor_id: b.instructor_id || null,
-    active: b.active === false || b.active === 0 ? 0 : 1
+    instructor_id: idOf(b.instructor_id, 'Instrutor'),
+    active: flag(b.active, 'Ativo', 1)
   };
   if (!isTime(o.start_time) || !isTime(o.end_time)) bad('Informe os horários no formato HH:MM.');
   if (o.end_time <= o.start_time) bad('O horário de término deve ser depois do início.');
@@ -456,12 +471,18 @@ async function lessonSnapshot(db, id) {
   return l;
 }
 
+const instructorExists = async (db, id) => { if (id && !(await first(db, 'SELECT id FROM staff WHERE id = ?', id))) bad('Instrutor não encontrado.'); };
+
 async function saveLesson(db, staff, b, id) {
+  // Tipos e formatos conferidos antes de qualquer consulta (V7).
+  const classIn = idOf(b.class_id, 'Turma'), instructorIn = idOf(b.instructor_id, 'Instrutor');
+  const studentIds = [...new Set(list(b.student_ids, 'Alunos da chamada').map(s => idOf(s, 'Aluno da chamada', true)))];
+  const techIds = [...new Set(list(b.technique_ids, 'Técnicas da aula').map(t => int(t, 1, 1e9, 'Técnica da aula', true)))];
   // Edição: o estado anterior vem do banco (nunca do cliente) e vai para a auditoria no mesmo batch da alteração.
   const before = id ? await lessonSnapshot(db, id) : null;
   if (id && !before) throw new HttpError(404, 'Aula não encontrada.');
-  const cls = b.class_id ? await first(db, 'SELECT * FROM classes WHERE id = ?', b.class_id) : null;
-  if (b.class_id && !cls) bad('Turma não encontrada.');
+  const cls = classIn ? await first(db, 'SELECT * FROM classes WHERE id = ?', classIn) : null;
+  if (classIn && !cls) bad('Turma não encontrada.');
   const o = {
     class_id: cls ? cls.id : null,
     date: date(b.date, 'Data da aula', true),
@@ -470,11 +491,9 @@ async function saveLesson(db, staff, b, id) {
     title: str(b.title, { max: 120, field: 'Tema da aula' }),
     notes: str(b.notes, { max: 2000, field: 'Observações' }),
     // Na edição, sem instrutor informado, o responsável registrado é mantido (corrigir a chamada de outra pessoa não troca o responsável).
-    instructor_id: b.instructor_id || (before ? before.instructor_id : (cls && cls.instructor_id) || staff.id)
+    instructor_id: instructorIn || (before ? before.instructor_id : (cls && cls.instructor_id) || staff.id)
   };
   if (!isTime(o.start_time) || !isTime(o.end_time) || o.end_time <= o.start_time) bad('Horário da aula inválido.');
-  const studentIds = [...new Set(Array.isArray(b.student_ids) ? b.student_ids : [])];
-  const techIds = [...new Set((Array.isArray(b.technique_ids) ? b.technique_ids : []).map(Number))];
   if (studentIds.length > LESSON_STUDENTS_MAX) bad(`A chamada aceita no máximo ${LESSON_STUDENTS_MAX} alunos.`);
   if (techIds.length > LESSON_TECHS_MAX) bad(`A aula aceita no máximo ${LESSON_TECHS_MAX} técnicas.`);
   const sJson = JSON.stringify(studentIds), tJson = JSON.stringify(techIds);
@@ -484,6 +503,7 @@ async function saveLesson(db, staff, b, id) {
     if (f.s !== studentIds.length) bad('Algum aluno da chamada não existe.');
     if (f.t !== techIds.length) bad('Alguma técnica não existe.');
   }
+  if (instructorIn && !(await first(db, 'SELECT id FROM staff WHERE id = ?', instructorIn))) bad('Instrutor não encontrado.');
   if (o.class_id) {
     const dup = await first(db, 'SELECT id FROM lessons WHERE class_id = ? AND date = ? AND id <> ?', o.class_id, o.date, id || '');
     if (dup) throw new HttpError(409, 'Já existe uma chamada desta turma neste dia.');
@@ -568,7 +588,7 @@ async function promote(db, staff, id, b) {
   }
   const m = st.metrics;
   const criteriaMet = m.next && m.next.kind === kind && (m.next.to_belt === toBelt || (m.next.choice_needed && ['cinza', 'azul'].includes(toBelt))) && m.ready ? 1 : 0;
-  if (!criteriaMet && !b.override) throw new HttpError(409, 'O aluno ainda não cumpre todos os critérios. Confirme para graduar mesmo assim.');
+  if (!criteriaMet && !flag(b.override, 'Confirmação', 0)) throw new HttpError(409, 'O aluno ainda não cumpre todos os critérios. Confirme para graduar mesmo assim.');
   const pid = uuid();
   await db.batch([
     db.prepare(`INSERT INTO promotions (id, student_id, kind, from_belt, from_degrees, to_belt, to_degrees, from_belt_since, from_degree_since, from_imported_belt, from_imported_degree, date, criteria_met, notes, staff_id)
@@ -590,7 +610,9 @@ async function route(req, env, url, ctx) {
     if (Number.isFinite(declared) && declared > BODY_MAX) throw new HttpError(413, 'Requisição grande demais.');
     let text; try { text = await req.text(); } catch { bad('Corpo da requisição inválido.'); }
     if (enc.encode(text).length > BODY_MAX) throw new HttpError(413, 'Requisição grande demais.');
-    try { return JSON.parse(text); } catch { bad('Corpo da requisição inválido.'); }
+    let v; try { v = JSON.parse(text); } catch { bad('Corpo da requisição inválido.'); }
+    if (!v || typeof v !== 'object' || Array.isArray(v)) bad('Corpo da requisição inválido.');
+    return v;
   };
 
   // CSRF: toda escrita precisa do cabeçalho do app (navegadores não o enviam em formulários de outros sites).
@@ -778,6 +800,7 @@ async function route(req, env, url, ctx) {
     if (items.length > SKILLS_MAX) bad(`No máximo ${SKILLS_MAX} avaliações por vez.`);
     // Valida tudo em memória; depois UMA consulta confere as técnicas e 2 comandos gravam o lote inteiro (antes: 1 consulta
     // por item + 2 comandos por item). Técnica repetida no mesmo lote é recusada (antes: a última vencia, em silêncio).
+    if (items.some(it => !it || typeof it !== 'object' || Array.isArray(it))) bad('Avaliação inválida.');
     const rows = items.map(it => ({ t: int(it.technique_id, 1, 1e9, 'Técnica', true), l: int(it.level, 0, 5, 'Nível', true), n: str(it.note, { max: 300, field: 'Observação' }) }));
     if (new Set(rows.map(r => r.t)).size !== rows.length) bad('A mesma técnica aparece mais de uma vez.');
     const rJson = JSON.stringify(rows);
@@ -807,7 +830,7 @@ async function route(req, env, url, ctx) {
 
   // ---------- turmas / horários ----------
   if (path === '/api/classes' && method === 'POST') {
-    const o = CLASS_FIELDS(await body()); const id = uuid();
+    const o = CLASS_FIELDS(await body()); await instructorExists(db, o.instructor_id); const id = uuid();
     await run(db, 'INSERT INTO classes (id, name, weekday, start_time, end_time, level, modality, instructor_id, active) VALUES (?,?,?,?,?,?,?,?,?)', id, o.name, o.weekday, o.start_time, o.end_time, o.level, o.modality, o.instructor_id, o.active);
     return json(await first(db, 'SELECT * FROM classes WHERE id = ?', id), 201);
   }
@@ -815,7 +838,7 @@ async function route(req, env, url, ctx) {
     const ex = await first(db, 'SELECT * FROM classes WHERE id = ?', m[1]);
     if (!ex) throw new HttpError(404, 'Turma não encontrada.');
     if (method === 'PUT') {
-      const o = CLASS_FIELDS(await body());
+      const o = CLASS_FIELDS(await body()); await instructorExists(db, o.instructor_id);
       await run(db, 'UPDATE classes SET name=?, weekday=?, start_time=?, end_time=?, level=?, modality=?, instructor_id=?, active=? WHERE id=?', o.name, o.weekday, o.start_time, o.end_time, o.level, o.modality, o.instructor_id, o.active, m[1]);
       return json(await first(db, 'SELECT * FROM classes WHERE id = ?', m[1]));
     }
@@ -853,7 +876,7 @@ async function route(req, env, url, ctx) {
     min_belt: oneOf(b.min_belt, ADULT, 'Faixa', 'branca'),
     difficulty: int(b.difficulty ?? 2, 1, 5, 'Dificuldade'),
     description: str(b.description, { max: 500, field: 'Descrição' }),
-    active: b.active === false || b.active === 0 ? 0 : 1
+    active: flag(b.active, 'Ativa', 1)
   });
   if (path === '/api/techniques' && method === 'POST') {
     admin();
@@ -924,7 +947,7 @@ async function route(req, env, url, ctx) {
     const b = await body();
     const ex = await first(db, 'SELECT * FROM staff WHERE id = ?', m[1]);
     if (!ex) throw new HttpError(404, 'Pessoa não encontrada.');
-    const role = oneOf(b.role, ['admin', 'professor'], 'Função', ex.role), active = b.active === false || b.active === 0 ? 0 : 1;
+    const role = oneOf(b.role, ['admin', 'professor'], 'Função', ex.role), active = flag(b.active, 'Ativo', 1);
     if (ex.id === me.id && (role !== 'admin' || !active)) bad('Você não pode remover seu próprio acesso de administrador.');
     const stmts = [db.prepare('UPDATE staff SET name=?, role=?, belt=?, active=? WHERE id=?').bind(str(b.name ?? ex.name, { min: 2, max: 80, field: 'Nome', required: true }), role, oneOf(b.belt, BELTS, 'Faixa', null), active, ex.id)];
     if (b.password) { const { hash, salt } = await hashPassword(checkPassword(b.password)); stmts.push(db.prepare('UPDATE staff SET pass_hash=?, pass_salt=? WHERE id=?').bind(hash, salt, ex.id), db.prepare('DELETE FROM auth_sessions WHERE staff_id = ?').bind(ex.id)); }
