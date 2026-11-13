@@ -37,7 +37,7 @@ await ctx.route('**/*', async route => {
 });
 const page = await ctx.newPage();
 page.on('pageerror', e => errors.push('pageerror: ' + e.message));
-page.on('console', m => { if (m.type() === 'error' && !/Content Security Policy|fonts|status of 40[01]/.test(m.text())) errors.push('console: ' + m.text()); });
+page.on('console', m => { if (m.type() === 'error' && !/Content Security Policy|fonts|status of 40[019]/.test(m.text())) errors.push('console: ' + m.text()); });
 const shot = n => page.screenshot({ path: `${SHOTS}/${n}.png`, fullPage: true });
 const clear = () => page.evaluate(() => document.querySelectorAll('.toast').forEach(t => t.remove()));
 const toastText = async () => (await page.locator('.toast').last().textContent({ timeout: 5000 })).trim();
@@ -185,6 +185,47 @@ await step('horários, técnicas e ajustes', async () => {
   await page.fill('#sf [name=name]', 'Prof. Rafael'); await page.fill('#sf [name=email]', 'rafael@exemplo.com'); await page.fill('#sf [name=password]', 'rafael2026');
   await clear(); await page.click('#sf button'); assert.match(await toastText(), /Acesso salvo/);
   await shot('11-ajustes');
+});
+
+await step('aluno: excluir só sem histórico; com histórico, inativar sem perder dados', async () => {
+  const rowOf = id => DB.raw.prepare('SELECT * FROM students WHERE id = ?').get(id);
+  const strip = r => { const { status, updated_at, ...rest } = r; return JSON.stringify(rest); };
+  const open = async id => { await page.evaluate(i => { location.hash = '#aluno/' + i; }, id); await page.waitForSelector('[data-act=detail-tab][data-id=dados]'); await page.click('[data-act=detail-tab][data-id=dados]'); await page.waitForSelector('#stu-form'); };
+  // sem histórico: Excluir aparece e funciona
+  const novo = (await api('POST', '/api/students', { name: 'Cadastro Engano', start_date: today })).student.id;
+  await open(novo);
+  assert.equal(await page.locator('[data-act=student-inactivate]').count(), 0, 'sem histórico: sem Inativar');
+  await page.click('[data-act=student-delete]'); await clear(); await page.click('#sheet [data-x=ok]');
+  assert.match(await toastText(), /Aluno excluído/);
+  await page.waitForFunction(() => location.hash === '#alunos');   // a tela volta à lista depois de atualizar os dados
+  assert.ok(!rowOf(novo) && DB.raw.prepare("SELECT count(*) n FROM audit_log WHERE event = 'student_deleted' AND target_id = ?").get(novo).n === 1, 'excluído no banco, com student_deleted');
+  // com histórico: sem Excluir; Inativar troca só a situação
+  const dani = DB.raw.prepare("SELECT id FROM students WHERE name = 'Daniela Rocha'").get().id, row0 = rowOf(dani);
+  const hist = () => JSON.stringify(['attendance', 'promotions', 'skills', 'skill_history'].map(t => DB.raw.prepare(`SELECT * FROM ${t} WHERE student_id = ? ORDER BY rowid`).all(dani)));
+  const h0 = hist();
+  await open(dani);
+  assert.equal(await page.locator('[data-act=student-delete]').count(), 0, 'com histórico: sem Excluir');
+  assert.match(await page.locator('#stu-history-note').textContent(), /tem histórico/);
+  await page.click('[data-act=student-inactivate]'); await clear(); await page.click('#sheet [data-x=ok]');
+  assert.match(await toastText(), /inativado/);
+  const row1 = rowOf(dani);
+  assert.ok(row1.status === 'inativo' && strip(row1) === strip(row0) && hist() === h0, 'inativar pela tela: só a situação mudou; histórico intacto');
+  await page.waitForSelector('#stu-history-note:has-text("já está inativo")');
+  assert.equal(await page.locator('[data-act=student-inactivate]').count(), 0);
+  // reativar pelo formulário (Situação)
+  await page.selectOption('#stu-form [name=status]', 'ativo'); await clear(); await page.click('#stu-form [type=submit]'); assert.match(await toastText(), /Dados salvos/);
+  const row2 = rowOf(dani);
+  assert.ok(row2.status === 'ativo' && strip(row2) === strip(row0) && hist() === h0, 'reativar: dados e histórico iguais ao original');
+  // histórico surge depois de abrir a ficha: o servidor recusa (409) e a tela oferece inativar
+  const corr = (await api('POST', '/api/students', { name: 'Corrida Tela', start_date: today })).student.id;
+  await open(corr);
+  DB.raw.prepare('INSERT INTO attendance (lesson_id, student_id) VALUES ((SELECT id FROM lessons LIMIT 1), ?)').run(corr);
+  await page.click('[data-act=student-delete]'); await page.click('#sheet [data-x=ok]');
+  await page.waitForSelector('#sheet:has-text("Exclusão não permitida")'); await clear(); await page.click('#sheet [data-x=ok]');
+  assert.match(await toastText(), /inativado/);
+  assert.ok(rowOf(corr).status === 'inativo' && DB.raw.prepare('SELECT count(*) n FROM attendance WHERE student_id = ?').get(corr).n === 1, '409 na tela: nada apagado, aluno inativado');
+  await shot('12-aluno-inativo');
+  await page.evaluate(() => { location.hash = '#ajustes'; }); await page.waitForSelector('.top [data-act=logout]');   // o passo seguinte parte dos ajustes
 });
 
 await step('professor sem permissão de admin e logout', async () => {

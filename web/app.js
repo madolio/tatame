@@ -456,7 +456,7 @@ VIEWS.aluno = id => {
       <div class="section-title"><h2>Aulas</h2><span class="muted xs">${m.classes_total} no total</span></div>
       <div class="list">${lessons.map(l => `<button class="item" data-act="lesson-open" data-id="${l.id}"><div class="grow"><b class="small">${sd(l.date)} · ${l.start_time}</b><div class="muted xs">${esc(l.class_name || 'Aula avulsa')}${l.title ? ` · ${esc(l.title)}` : ''}</div></div>${I('right', 15)}</button>`).join('') || '<div class="empty">Nenhuma presença registrada.</div>'}</div>`;
   } else {
-    body = studentForm(s);
+    body = studentForm(s, historyOf(detail));
   }
   return {
     html: `<div class="top crumbs"><a class="back" href="#alunos">${I('left', 16)} Alunos</a>
@@ -479,8 +479,23 @@ VIEWS.aluno = id => {
   };
 };
 
-function studentForm(s) {
+// V12: histórico que impede a exclusão definitiva (a API é quem decide; aqui é só para mostrar o botão certo). Mesmas quatro
+// fontes que o servidor confere: presenças, graduações, avaliações atuais (skills) e registros de avaliação (skill_history).
+const historyOf = d => ({ presencas: d.student.metrics.classes_total, graduacoes: d.promotions.length, avaliacoes: d.skills.length, registros: d.history.length });
+const hasHistory = h => !!(h && (h.presencas || h.graduacoes || h.avaliacoes || h.registros));
+const plural = (n, um, varios) => `${n} ${n === 1 ? um : varios}`;
+// Ações de fim de cadastro (só admin): sem histórico, Excluir; com histórico, Inativar (ou o aviso de que já está inativo).
+function studentEndActions(s, h) {
+  if (!hasHistory(h)) return `<button type="button" class="btn danger" data-act="student-delete" data-id="${s.id}">${I('trash', 15)} Excluir</button>`;
+  const what = [plural(h.presencas, 'presença', 'presenças'), plural(h.graduacoes, 'graduação', 'graduações'), plural(Math.max(h.avaliacoes, h.registros), 'avaliação', 'avaliações')].join(', ');
+  return `<p class="full muted xs" id="stu-history-note" style="margin:0">Este aluno tem histórico (${what}). Para preservá-lo, a exclusão definitiva não é permitida${s.status === 'inativo' ? '; ele já está inativo.' : ': inative para tirá-lo das listas de ativos e das novas chamadas.'}</p>
+    ${s.status === 'inativo' ? '' : `<button type="button" class="btn ghost" data-act="student-inactivate" data-id="${s.id}">${I('x', 15)} Inativar</button>`}`;
+}
+
+function studentForm(s, hist) {
   const n = !s; s = s || {};
+  const endActions = !n && isAdmin() ? studentEndActions(s, hist) : '';
+  const twoButtons = /data-act="student-(delete|inactivate)"/.test(endActions);
   // Campos que mudam a contagem para graduação: depois do cadastro, só o administrador corrige (o servidor também confere).
   const lock = !n && !isAdmin() ? 'disabled' : '';
   return `<form id="stu-form" class="card form-grid" novalidate>
@@ -504,8 +519,8 @@ function studentForm(s) {
     <label class="field full"><span>Objetivos</span><input class="input" name="goals" maxlength="500" value="${esc(s.goals || '')}" placeholder="Ex.: competir, defesa pessoal, condicionamento"></label>
     <label class="field full"><span>Observações do professor</span><textarea class="input" name="notes" maxlength="2000">${esc(s.notes || '')}</textarea></label>
     <div class="err full" id="stu-err"></div>
-    ${!n && isAdmin() ? `<button type="button" class="btn danger" data-act="student-delete" data-id="${s.id}">${I('trash', 15)} Excluir</button>` : ''}
-    <button class="btn ${!n && isAdmin() ? '' : 'full'}" type="submit">${n ? 'Cadastrar aluno' : 'Salvar dados'}</button>
+    ${endActions}
+    <button class="btn ${twoButtons ? '' : 'full'}" type="submit">${n ? 'Cadastrar aluno' : 'Salvar dados'}</button>
   </form>`;
 }
 
@@ -820,6 +835,19 @@ function openStaff(id) {
 // =====================================================================
 // Ações
 // =====================================================================
+// Inativar (V12) = PUT com o cadastro COMPLETO lido agora do servidor, trocando só a situação. O PUT de aluno trata campo
+// ausente como vazio (mandar só { status } apagaria apelido, telefone, observações...). As datas de graduação e as aulas
+// anteriores ao sistema ficam de fora de propósito: ausentes, o servidor as mantém como estão.
+const STUDENT_PUT_FIELDS = ['name', 'nickname', 'birth_date', 'sex', 'phone', 'email', 'start_date', 'prior_months', 'weight_kg', 'goals', 'notes'];
+async function inactivateStudent(id) {
+  const d = await busy(null, async () => {
+    const cur = (await api('GET', '/api/students/' + id)).student;
+    return api('PUT', '/api/students/' + id, { ...Object.fromEntries(STUDENT_PUT_FIELDS.map(k => [k, cur[k] ?? null])), status: 'inativo' });
+  }, 'Aluno inativado. O histórico foi preservado.');
+  if (!d) return;
+  detail = d; await refresh(); render();
+}
+
 const ACT = {
   'close-sheet': () => closeSheet(),
   reload: () => location.reload(),
@@ -828,8 +856,19 @@ const ACT = {
   'stu-filter': el => { S.ui.stuFilter = el.dataset.id; render(); },
   'student-new': () => { const w = sheet(`${sheetHead('Novo aluno')}${studentForm(null)}`); w.querySelector('#stu-form').classList.remove('card'); bindStudentForm(null); },
   'student-delete': async el => {
-    if (!(await confirmBox('Excluir aluno?', 'Apaga o cadastro, presenças, avaliações e graduações deste aluno. Para manter o histórico, marque como inativo.', 'Excluir'))) return;
-    await busy(null, async () => { await api('DELETE', '/api/students/' + el.dataset.id); detail = null; await refresh(); location.hash = 'alunos'; }, 'Aluno excluído.');
+    const id = el.dataset.id;
+    if (!(await confirmBox('Excluir aluno?', 'O cadastro será apagado definitivamente. Este aluno não tem presenças, graduações nem avaliações.', 'Excluir'))) return;
+    try {
+      await api('DELETE', '/api/students/' + id); toast('Aluno excluído.', 'success'); detail = null; await refresh(); location.hash = 'alunos';
+    } catch (e) {
+      // 409: o servidor encontrou histórico (por exemplo, uma chamada gravada depois que a ficha foi aberta). Nada foi apagado.
+      if (e.status === 409) { detail = null; if (await confirmBox('Exclusão não permitida', e.message, 'Inativar', false)) await inactivateStudent(id); else render(); }
+      else if (e.status !== 401) toast(e.message || 'Erro inesperado.', 'error');
+    }
+  },
+  'student-inactivate': async el => {
+    if (!(await confirmBox('Inativar aluno?', 'O aluno sai das listas de ativos e das novas chamadas. Presenças, graduações e avaliações continuam guardadas, e dá para reativar depois em Situação.', 'Inativar', false))) return;
+    await inactivateStudent(el.dataset.id);
   },
   'detail-tab': el => { S.ui.detailTab = el.dataset.id; render(); },
   'skill-filter': el => { S.ui.skillFilter = el.dataset.id; render(); },

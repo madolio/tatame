@@ -141,10 +141,15 @@ const E = (event, actor, tt, tid, extra = {}) => ({ event, staff_id: null, actor
   await w.call('PUT', `/api/students/${S}/skills`, { technique_id: await mkTech(w, admin), level: 2 }, { cookie: admin });
   n = w.count();
   ok((await w.call('DELETE', '/api/students/' + S, undefined, { cookie: prof })).status === 403 && is(w.shape(w.last()), E('action_denied', P, 'student', S, { outcome: 'denied', detail: { acao: 'student_delete', motivo: 'requer_admin' } })), 'professor tenta excluir aluno: 403 e action_denied');
+  // 6.4-D (V12): aluno com histórico não é mais excluído (409, nada apagado, nenhum student_deleted); detalhes em tests/student_delete.mjs
   n = w.count();
-  ok((await w.call('DELETE', '/api/students/' + S, undefined, { cookie: admin })).status === 200 && w.count() === n + 1 && is(w.shape(w.last()), E('student_deleted', A1, 'student', S, { detail: { presencas: 1, graduacoes: 1, avaliacoes: 1 } })),
-    'exclusão de aluno (comportamento atual mantido): student_deleted com o tamanho do histórico apagado, sem dados do aluno');
-  ok(L && w.row('SELECT count(*) n FROM attendance WHERE lesson_id = ?', L).n === 0, 'a exclusão continua apagando o histórico em cascata (política fica para a 6.4-D)');
+  ok((await w.call('DELETE', '/api/students/' + S, undefined, { cookie: admin })).status === 409 && w.count() === n && !w.ev('student_deleted').length && w.row('SELECT count(*) n FROM students WHERE id = ?', S).n === 1,
+    'exclusão de aluno COM histórico (6.4-D): 409, cadastro mantido e nenhum student_deleted');
+  ok(L && w.row('SELECT count(*) n FROM attendance WHERE lesson_id = ?', L).n === 1, 'presença preservada (sem cascata)');
+  const S0 = (await w.call('POST', '/api/students', { name: 'Cadastro Por Engano', start_date: '2025-01-10' }, { cookie: admin })).body.student.id;
+  n = w.count();
+  ok((await w.call('DELETE', '/api/students/' + S0, undefined, { cookie: admin })).status === 200 && w.count() === n + 1 && is(w.shape(w.last()), E('student_deleted', A1, 'student', S0, { detail: { presencas: 0, graduacoes: 0, avaliacoes: 0 } })),
+    'exclusão de aluno SEM histórico: um student_deleted no formato da 6.4-C (contagens 0), sem dados do aluno');
   const dump = JSON.stringify(w.rows('SELECT * FROM audit_log'));
   ok(Object.values(PII).every(v => !dump.includes(v)) && !dump.includes('Outro Apelido') && !dump.includes('90000-0000') && !dump.includes('2000-05-05') && !dump.includes('Temporário'), 'nenhum nome, apelido, telefone, e-mail, nascimento, objetivo ou observação de aluno na auditoria'); }
 

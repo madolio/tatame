@@ -1071,10 +1071,23 @@ async function route(req, env, url, ctx) {
     }
     if (method === 'DELETE') {
       await admin('student_delete', T);
-      // Exclusão (comportamento atual mantido; a política fica para a 6.4-D): o evento leva só o tamanho do histórico apagado em
-      // cascata, sem dados do aluno, e só é gravado se o aluno ainda existe no batch da exclusão.
-      const n = await first(db, 'SELECT (SELECT count(*) FROM attendance WHERE student_id = ?) a, (SELECT count(*) FROM promotions WHERE student_id = ?) p, (SELECT count(*) FROM skills WHERE student_id = ?) s', id, id, id);
-      await db.batch([audit(db, 'student_deleted', { actor: me.id, target: T, detail: { presencas: n.a, graduacoes: n.p, avaliacoes: n.s } }, alive), db.prepare('DELETE FROM students WHERE id = ?').bind(id)]);
+      // V12 (6.4-D): exclusão definitiva só de aluno SEM histórico (nenhuma presença, graduação, avaliação ou registro de
+      // avaliação). Com histórico: 409 e nada muda; o caminho é inativar (PUT com status). As cascatas do schema continuam lá,
+      // mas a API nunca chega a usá-las. A condição vale DENTRO do batch (estado do banco naquele instante, não o lido antes):
+      // o evento vem primeiro com a mesma condição e o DELETE é o último comando; o número de linhas apagadas decide a resposta.
+      // Histórico criado em paralelo (chamada gravada ao mesmo tempo) ou outra exclusão simultânea: nada apagado, nenhum evento.
+      const noHistory = `EXISTS (SELECT 1 FROM students WHERE id = ?) AND NOT EXISTS (SELECT 1 FROM attendance WHERE student_id = ?)
+        AND NOT EXISTS (SELECT 1 FROM promotions WHERE student_id = ?) AND NOT EXISTS (SELECT 1 FROM skills WHERE student_id = ?)
+        AND NOT EXISTS (SELECT 1 FROM skill_history WHERE student_id = ?)`, NH = Array(5).fill(id);
+      // Formato do evento aprovado na 6.4-C mantido: as contagens são 0 por construção (a mesma condição as garante).
+      const res = await db.batch([
+        audit(db, 'student_deleted', { actor: me.id, target: T, detail: { presencas: 0, graduacoes: 0, avaliacoes: 0 } }, { where: noHistory, params: NH }),
+        db.prepare(`DELETE FROM students WHERE id = ? AND ${noHistory}`).bind(id, ...NH)
+      ]);
+      if (res?.[1]?.meta?.changes !== 1) {
+        if (!(await first(db, 'SELECT 1 x FROM students WHERE id = ?', id))) throw new HttpError(404, 'Aluno não encontrado.');
+        throw new HttpError(409, 'Este aluno tem histórico (presenças, graduações ou avaliações) e não pode ser excluído. Marque como inativo para preservar o histórico.');
+      }
       return json({ ok: true });
     }
   }

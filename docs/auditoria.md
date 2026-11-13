@@ -53,7 +53,7 @@ Eventos novos (6.4-C, `staff_id` nulo):
 | `student_updated` | student | `campos` (só os nomes dos campos alterados, nunca os valores) |
 | `student_status_changed` | student | `de`, `para` (desativação, trancamento, reativação) |
 | `student_graduation_corrected` | student | `antes`, `depois` (datas de faixa/grau e aulas anteriores ao sistema) |
-| `student_deleted` | student | `presencas`, `graduacoes`, `avaliacoes` (tamanho do histórico apagado em cascata) |
+| `student_deleted` | student | `presencas`, `graduacoes`, `avaliacoes`: sempre 0 desde a 6.4-D (só aluno sem histórico pode ser excluído; a mesma condição do `DELETE` garante os zeros) |
 | `promotion_created` | promotion | `aluno`, `tipo`, `de_faixa`, `de_graus`, `para_faixa`, `para_graus`, `data`, `criterios_cumpridos` |
 | `promotion_undone` | promotion | `aluno`, `tipo`, de/para da graduação desfeita |
 | `lesson_created` | lesson | `turma`, `data`, `alunos`, `tecnicas`, `chamada` |
@@ -109,7 +109,7 @@ Nenhum `INSERT INTO audit_log` existe fora do helper (conferido em `tests/audit.
 ## Limites conhecidos
 
 - Os `campos` de `student_updated`/`class_updated`/`technique_updated`/`staff_updated`, o `de` de `student_status_changed`,
-  o `antes` de `student_graduation_corrected`, as `faixas` de `rules_updated` e as contagens de `student_deleted` são
+  o `antes` de `student_graduation_corrected`, e as `faixas` de `rules_updated` são
   calculados contra o estado lido no início da requisição. Com duas edições simultâneas do mesmo registro, podem refletir a
   leitura e não o instante exato da gravação (ator, alvo e o fato de ter havido a gravação continuam exatos).
 - Avaliações de técnica (`/skills`) não geram evento: já ficam em `skill_history` com quem avaliou.
@@ -138,10 +138,25 @@ Nada é apagado automaticamente: a tabela cresce sem limite até haver uma polí
   verificável por tempo suficiente para apurar incidentes e contestações.
 - **Minimização (LGPD, art. 6º, III):** os eventos não guardam dados pessoais diretos, mas guardam **ids** de alunos e da
   equipe, que continuam vinculáveis enquanto a pessoa existe no banco ou em backups.
-- **Ids históricos:** após a exclusão de um aluno (hoje permitida; política na 6.4-D), o id no evento deixa de apontar para
+- **Ids históricos:** após a exclusão de um aluno (desde a 6.4-D, só de cadastro sem histórico), o id no evento deixa de apontar para
   um cadastro, mas pode ser casado com backups antigos durante a retenção deles.
 - **Pedidos de titulares e obrigações legais:** um pedido de eliminação pode conflitar com a guarda de registros de
   segurança; a política deve dizer o que prevalece e por quanto tempo.
 
 A sugestão de **24 meses** (auditoria da Etapa 6.4) é uma hipótese, **não** uma decisão aprovada. Quando aprovada, a
 remoção deve ser uma operação explícita e registrada (e alinhada à retenção dos backups), não um efeito colateral.
+
+## Exclusão de aluno (V12, Etapa 6.4-D)
+
+- **Exclusão definitiva:** só administrador, e só de aluno **sem histórico**: nenhuma linha em `attendance`, `promotions`,
+  `skills` ou `skill_history` (inclui o "visto em aula" que sobra quando uma aula é excluída). É o caso de um cadastro feito
+  por engano. Com histórico: **409** e nada é apagado; o caminho é **inativar** (situação "inativo"), que preserva tudo.
+- **Atomicidade:** a condição "existe e não tem histórico" vale **dentro** do batch: o `student_deleted` (primeiro comando) e
+  o `DELETE` (último) levam a mesma condição, e o número de linhas apagadas decide a resposta (200, 404 ou 409). Histórico
+  gravado em paralelo (uma chamada ao mesmo tempo) ou duas exclusões simultâneas: nunca há exclusão parcial nem evento sem
+  exclusão. Testado com atrasos aleatórios (`tests/student_delete.mjs`).
+- **A interface** mostra "Excluir" só quando a ficha não tem histórico e, com histórico, "Inativar" com a explicação; um 409
+  vindo do servidor (histórico surgido depois de abrir a ficha) oferece inativar. "Inativar" envia o cadastro completo lido
+  do servidor, porque o `PUT` de aluno trata campo ausente como vazio. A API é a autoridade; os botões só orientam.
+- **Limites desta etapa:** as cascatas (`ON DELETE CASCADE`) continuam no schema; um `DELETE` direto por SQL ainda apagaria o
+  histórico (sem trigger nem migração 004 por decisão; revisitar junto com a eliminação de dados da LGPD, ainda não feita).
