@@ -1,5 +1,5 @@
 {
-  "_leia": "Ambientes do banco. Sem segredos: nome e database_id do D1 não são credenciais. 'PENDENTE' = ainda não conhecido; o wrapper (tools/db.mjs) recusa qualquer operação num ambiente pendente. Preencha só com valores copiados de `wrangler d1 info <nome>` ou do painel, nunca inventados. Ver docs/operacao-banco.md.",
+  "_leia": "Ambientes do banco. Sem segredos: nome e database_id do D1 não são credenciais. 'PENDENTE' = ainda não conhecido; o wrapper (tools/db.mjs) recusa qualquer operação num ambiente pendente. Preencha só com valores copiados de `wrangler d1 info <nome>` ou do painel, nunca inventados. O UUID da produção é obrigatório para QUALQUER operação remota (lista de recusa por UUID). app_url: origem do app do ambiente; o da produção serve só para o staging-check recusar esse host. Ver docs/operacao-banco.md.",
   "local": {
     "kind": "local",
     "descricao": "Arquivo SQLite local (node:sqlite), informado com --sqlite <arquivo>. Nunca acessa a rede."
@@ -8,6 +8,7 @@
     "kind": "remote",
     "database_name": "tatame-staging",
     "database_id": "PENDENTE",
+    "app_url": "PENDENTE",
     "descricao": "Ensaios de migração com dados ANONIMIZADOS. Aceita import apenas de backup anonimizado."
   },
   "restore-test": {
@@ -22,6 +23,7 @@
     "database_name": "PENDENTE",
     "database_id": "PENDENTE",
     "protected": true,
+    "app_url": "https://tatame-2rx.pages.dev",
     "descricao": "Produção. Exige --confirm-production=<nome exato> e terminal interativo; nunca é destino de import/restore-test."
   }
 }
