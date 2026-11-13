@@ -2,7 +2,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "test": "node tests/api_test.mjs && node tests/setup.mjs && node tests/bruteforce.mjs && node tests/password_change.mjs && node tests/reset.mjs && node tests/admin_integrity.mjs && node tests/audit.mjs && node tests/student_delete.mjs && node tests/permissions.mjs && node tests/lessons_auth.mjs && node tests/limits.mjs && node tests/validation.mjs && node tests/migration.mjs && node tests/parity.mjs && node tests/db_guard.mjs && node tests/db_identity.mjs && node tests/schema_check.mjs && node tests/db_migrate.mjs && node tests/backup.mjs && node tests/backup_crypto.mjs && node tests/backup_temp.mjs && node tests/backup_key.mjs && node tests/anonymize.mjs",
+    "test": "node tests/api_test.mjs && node tests/setup.mjs && node tests/bruteforce.mjs && node tests/password_change.mjs && node tests/reset.mjs && node tests/admin_integrity.mjs && node tests/audit.mjs && node tests/student_delete.mjs && node tests/permissions.mjs && node tests/lessons_auth.mjs && node tests/limits.mjs && node tests/validation.mjs && node tests/migration.mjs && node tests/parity.mjs && node tests/db_guard.mjs && node tests/db_identity.mjs && node tests/db_synthetic.mjs && node tests/schema_check.mjs && node tests/db_migrate.mjs && node tests/backup.mjs && node tests/backup_crypto.mjs && node tests/backup_temp.mjs && node tests/backup_key.mjs && node tests/anonymize.mjs",
     "test:parity": "node tests/parity.mjs",
     "test:e2e": "node tests/e2e.mjs",
     "test:all": "npm test && node tests/e2e.mjs"
