@@ -104,7 +104,7 @@ condição em que se para tudo (não tentar "consertar" no meio: anote, pare e r
 
 ### Passo 8: tabelas, índices, chaves estrangeiras e dados
 - **Comando:** `node tools/db.mjs check --env restore-test`
-- **Esperado:** schema igual ao esperado (inclui índices e gatilhos na impressão digital), `integrity_check` ok, `foreign_key_check` vazio.
+- **Esperado:** schema igual ao esperado (inclui índices e gatilhos na impressão digital), `quick_check (D1)` ok, `foreign_key_check` vazio. O D1 não aceita `integrity_check` (erro 7500, constatado na 6.5-B); a verificação completa é a do passo 6, na cópia exportada.
 - **Aprova:** veredito ok; contagens iguais às do manifesto (já conferidas no passo 7).
 - **Interrompe:** objeto faltando ou sobrando (exceto `_cf_*`/`sqlite_*`, ignorados).
 

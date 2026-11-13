@@ -13,7 +13,7 @@ export function readState(src) {
   return { rows, hasMigrationsTable: hasTable, applied, userTables: rows.filter(r => r.type === 'table' && !/^sqlite_|^_cf_/i.test(r.name) && r.name !== MIGRATIONS_TABLE).length };
 }
 export function readIntegrity(src) {
-  const ic = src.query(INTEGRITY_QUERIES.integrity).map(r => Object.values(r)[0]);
+  const ic = src.query(src.kind === 'remote' ? INTEGRITY_QUERIES.integrity_remote : INTEGRITY_QUERIES.integrity).map(r => Object.values(r)[0]);
   const fk = src.query(INTEGRITY_QUERIES.foreign_keys);
   return { integrity_ok: ic.length === 1 && ic[0] === 'ok', integrity: ic.slice(0, 20), foreign_key_violations: fk.length, foreign_key_tables: [...new Set(fk.map(r => r.table))] };
 }
@@ -64,7 +64,7 @@ registerOp('check', async ctx => {
     if (src.dryRun) { src.query(SCHEMA_QUERY); return 0; }
     const rep = checkReport(readState(src), readIntegrity(src));
     ctx.deps.out(`[check] migrações registradas: ${rep.applied.join(', ') || '(nenhuma)'} | pendentes: ${rep.pending.join(', ') || '(nenhuma)'}`);
-    ctx.deps.out(`[check] integrity_check: ${rep.integrity.integrity_ok ? 'ok' : 'FALHOU'} | violações de FK: ${rep.integrity.foreign_key_violations} | schema ${rep.schema_hash.slice(0, 16)}…`);
+    ctx.deps.out(`[check] ${src.kind === 'remote' ? 'quick_check (D1)' : 'integrity_check'}: ${rep.integrity.integrity_ok ? 'ok' : 'FALHOU'} | violações de FK: ${rep.integrity.foreign_key_violations} | schema ${rep.schema_hash.slice(0, 16)}…`);
     for (const d of rep.differences) ctx.deps.out('  - ' + describeDiff(d));
     ctx.deps.out(rep.ok ? '[check] OK' : `[check] PROBLEMAS: ${rep.problems.join('; ')}`);
     return rep.ok ? 0 : 4;

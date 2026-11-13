@@ -64,7 +64,9 @@ export function sqliteRemote(file, { account = ACCOUNT, cfgEnvs = ENVS, calls = 
       }
       const sql = args[args.indexOf('--command') + 1];
       const single = !/;\s*\S/.test(sql.trim().replace(/;\s*$/, ''));
-      const isQuery = single && /^\s*(SELECT|PRAGMA (integrity_check|foreign_key_check))/i.test(sql);
+      // Como o D1 real (ensaio 6.5-B, 2026-11-13): PRAGMA integrity_check é recusado com erro 7500; quick_check é aceito.
+      if (/^\s*PRAGMA\s+integrity_check/i.test(sql)) return { status: 1, stdout: '', stderr: JSON.stringify({ error: { text: 'not authorized', code: 7500 } }) };
+      const isQuery = single && /^\s*(SELECT|PRAGMA (quick_check|foreign_key_check))/i.test(sql);
       return { status: 0, stdout: JSON.stringify([{ results: isQuery ? db.prepare(sql).all() : (db.exec(sql), []), success: true }]) };
     } catch (e) { return { status: 1, stdout: '', stderr: String(e.message) }; }
     finally { db.close(); }

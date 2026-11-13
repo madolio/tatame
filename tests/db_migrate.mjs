@@ -95,15 +95,29 @@ try {
     if (args[1] === 'time-travel') return { status: 0, stdout: JSON.stringify({ bookmark: '0000abcd-teste' }) };
     if (args[1] === 'migrations') { const db = new DatabaseSync(remoteFile); try { const done = db.prepare('SELECT name FROM d1_migrations').all().map(r => r.name); applyLocal({ exec: s => db.exec(s) }, migrationFiles().filter(f => !done.includes(f)), () => {}); } finally { db.close(); } return { status: 0, stdout: '' }; }
     const sql = args[args.indexOf('--command') + 1];
+    // Como o D1 real (ensaio 6.5-B, 2026-11-13): PRAGMA integrity_check é recusado com erro 7500.
+    if (/^\s*PRAGMA\s+integrity_check/i.test(sql)) return { status: 1, stdout: '', stderr: JSON.stringify({ error: { text: 'not authorized', code: 7500 } }) };
     const db = new DatabaseSync(remoteFile);
     try { return { status: 0, stdout: JSON.stringify([{ results: /^\s*(SELECT|PRAGMA)/i.test(sql) ? db.prepare(sql).all() : (db.exec(sql), []), success: true, meta: {} }]) }; } finally { db.close(); }
   };
+  const sqlCalls = () => calls.filter(a => a.includes('--command')).map(a => a[a.indexOf('--command') + 1]);
   const out = [], err = [];
   const rd = { environments: () => envs, migrationsConfigText: () => cfg, identityConfigText: identityCfg, env: { TATAME_EVIDENCE_DIR: evidenceDir() }, wranglerVersion: () => '4.155.0', exec: sim, isTTY: () => false, ask: async () => '', out: m => out.push(m), err: m => err.push(m) };
   let code = await main(['migrate', '--env', 'staging'], rd);
   ok(code === 0 && applied(remoteFile).join() === migrationFiles().join(), 'remoto (simulado): aplica pendentes via `wrangler d1 migrations apply` e confere o registro depois');
   ok(/bookmark do Time Travel ANTES da migração: 0000abcd-teste/.test(out.join('\n')), 'remoto: mostra o bookmark do Time Travel antes de aplicar');
   ok(calls.some(a => a.slice(0, 3).join(' ') === 'd1 migrations apply') && /OK: registradas/.test(out.join('\n')), 'remoto: verificação posterior (registro, schema, integridade) executada');
+  // Regressão do ensaio 6.5-B: no D1 remoto a integridade vai por quick_check (integrity_check é recusado com 7500).
+  ok(sqlCalls().some(s => /PRAGMA quick_check/.test(s)) && !sqlCalls().some(s => /integrity_check/.test(s)), 'remoto (migrate): integridade por PRAGMA quick_check; integrity_check nunca é enviado ao D1');
+  calls.length = 0; out.length = 0;
+  code = await main(['check', '--env', 'staging'], rd);
+  ok(code === 0 && /quick_check \(D1\): ok/.test(out.join('\n')) && sqlCalls().some(s => /PRAGMA quick_check/.test(s)) && !sqlCalls().some(s => /integrity_check/.test(s)), 'remoto (check): PRAGMA quick_check aceito, integrity_check nunca enviado; veredito OK');
+  { const h = await runLocal('check', '--env', 'local', '--sqlite', remoteFile);
+    ok(h.code === 0 && /\] integrity_check: ok/.test(h.out.join('\n')), 'local (check): SQLite comum continua com PRAGMA integrity_check completo'); }
+  { // sem a correção: o mesmo banco remoto recusando integrity_check faz o check falhar (prova que o simulador reproduz o D1)
+    const r = sim(['d1', 'execute', 'tatame-staging', '--remote', '-c', MIGRATIONS_CONFIG, '--env', 'staging', '--json', '--yes', '--command', 'PRAGMA integrity_check']);
+    ok(r.status === 1 && /7500/.test(r.stderr), 'simulador do D1 recusa PRAGMA integrity_check com erro 7500, como o D1 real'); }
+  calls.length = 0;
   // config divergente do environments.json: recusa sem chamar nada
   calls.length = 0;
   code = await main(['migrate', '--env', 'staging'], { ...rd, migrationsConfigText: () => cfg.replace(ID, '99999999-9999-4999-8999-999999999999') });

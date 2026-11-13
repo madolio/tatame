@@ -109,7 +109,7 @@ node tools/db.mjs <operação> --env <ambiente> [opções]
 
 | Operação | Tipo | O que faz |
 |---|---|---|
-| `check` | leitura | Compara o schema real com o esperado para as migrações registradas; roda `integrity_check` e `foreign_key_check`. |
+| `check` | leitura | Compara o schema real com o esperado para as migrações registradas; roda `foreign_key_check` e, para integridade, `integrity_check` no SQLite local ou `quick_check` no D1 remoto (ver 12). |
 | `baseline` | leitura | Compara o schema real com o de `17f1fbd` e dá um veredito. Não grava nada. |
 | `baseline-register` | escrita | Registra `000_base.sql` como aplicada **sem executá-la**, só se a comparação for idêntica. Exige `--confirm-baseline=000_base.sql`. |
 | `migrate` | escrita | Verifica antes, anota o bookmark do Time Travel, aplica **só** as pendentes, verifica depois. |
@@ -175,7 +175,7 @@ O `migrate`:
 3. mostra o **bookmark do Time Travel** antes de aplicar — **anote-o**;
 4. aplica as pendentes com `wrangler d1 migrations apply` (cada migração e seu registro são um único comando; se
    uma falha, ela é revertida e as anteriores ficam);
-5. confere depois: registro completo, schema esperado, `integrity_check`, `foreign_key_check`.
+5. confere depois: registro completo, schema esperado, `quick_check` (no D1 remoto; `integrity_check` não é aceito, ver 12), `foreign_key_check`.
 
 **Nunca reverte sozinho.** Se a verificação posterior falhar, siga a seção 9.1.
 
@@ -423,7 +423,7 @@ copiem o temporário.
 4. Se não houver reversão segura, ou na dúvida: Time Travel até o **bookmark anotado** antes da migração (seção 8).
 5. Rode `check` de novo e registre o ocorrido.
 
-### 9.2 Corrupção (`integrity_check` diferente de ok)
+### 9.2 Corrupção (`quick_check` no D1, ou `integrity_check` na cópia exportada, diferente de ok)
 Não grave nada. Time Travel até o último ponto bom (descubra com `time-travel info --timestamp`); se passou de 7 dias,
 restaure o último backup verificado (`import` num banco novo, conferência, troca do binding no painel).
 
@@ -459,6 +459,11 @@ wrangler/D1 que só o ensaio confirma) está em **`docs/validacao-d1.md`**. Resu
 
 ## 12. Limitações conhecidas
 
+- **D1 não aceita `PRAGMA integrity_check`** (constatado no ensaio da Etapa 6.5-B, 2026-11-13: erro 7500 no
+  `check --env restore-test`; a documentação do D1 lista só `quick_check` e `foreign_key_check`). Por isso, no D1
+  remoto, `check` e `migrate` usam `PRAGMA quick_check`, que confere formato de registros e páginas, mas **não** a
+  coerência entre índices e tabelas. A verificação completa (`integrity_check`) continua sendo feita no SQLite local,
+  sobre a cópia exportada (`export`, `verify`, `restore-test`). Em suspeita de corrupção, exporte e rode `verify`.
 - **Etapa 6.5-A, nada executado contra a Cloudflare:** a identidade, o portão, as evidências, `sql`,
   `timetravel-restore` e `staging-check` foram testados só com a Cloudflare simulada. O formato real do JSON de
   `d1 info`, do bookmark e das mensagens de autenticação só se confirma no ensaio; se divergir, o wrapper recusa.

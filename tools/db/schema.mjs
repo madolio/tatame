@@ -111,8 +111,11 @@ export function expectedAfter(names, dir = MIGRATIONS_DIR) {
   } finally { db.close(); }
 }
 
-// Verificações de integridade num banco aberto (SQLite local). Remotamente, as mesmas consultas vão pelo wrangler.
-export const INTEGRITY_QUERIES = { integrity: 'PRAGMA integrity_check', foreign_keys: 'PRAGMA foreign_key_check' };
+// Verificações de integridade. SQLite local: integrity_check (completa). D1 remoto: o D1 NÃO aceita integrity_check
+// (erro 7500, constatado no ensaio da Etapa 6.5-B em 2026-11-13; a documentação do D1 lista só quick_check e
+// foreign_key_check); lá vai quick_check, que confere formato dos registros e páginas, mas não a coerência dos índices.
+// A integridade completa continua conferida pelo integrity_check na cópia exportada (verify/export/restore-test).
+export const INTEGRITY_QUERIES = { integrity: 'PRAGMA integrity_check', integrity_remote: 'PRAGMA quick_check', foreign_keys: 'PRAGMA foreign_key_check' };
 export function integrityLocal(raw) {
   const ic = raw.prepare(INTEGRITY_QUERIES.integrity).all();
   const fk = raw.prepare(INTEGRITY_QUERIES.foreign_keys).all();
