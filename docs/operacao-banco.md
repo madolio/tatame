@@ -65,7 +65,32 @@ O wrapper **recusa sem executar nada** quando:
 - é produção e falta `--confirm-production=<nome exato do banco>`, o nome não confere, não há terminal interativo ou
   o nome redigitado na pergunta não confere;
 - `import`/`restore-test` apontam para produção (mesmo com confirmação);
-- variáveis de ambiente tentam escolher ou confirmar produção (o wrapper ignora variáveis para isso).
+- variáveis de ambiente tentam escolher ou confirmar produção (o wrapper ignora variáveis para isso);
+- aparece `--db`, `--remote`, `--local` ou `--config` (nome livre de banco nunca substitui `--env`);
+- (operação remota) `db/wrangler.migrations.jsonc` diverge de `db/environments.json`, `db/wrangler.identity.jsonc`
+  declara algum banco, dois ambientes têm o mesmo UUID ou nome, **o nome e o UUID reais da produção não estão
+  preenchidos** (sem eles não há como provar que o destino não é a produção) ou o UUID/nome do destino é o da produção;
+- (operação remota real) `TATAME_EVIDENCE_DIR` não está definido, não existe ou fica no repositório/OneDrive.
+
+### 3.1 Identidade, portão e evidências (Etapa 6.5-A)
+- **Identidade.** Antes do primeiro comando remoto de cada execução, o wrapper pergunta à Cloudflare, com o wrangler
+  fixado: `d1 info <nome> -c db/wrangler.migrations.jsonc --env <amb> --json` (o wrangler usa o UUID do arquivo **sem
+  conferir a conta** e a API devolve o nome real desse UUID) e `d1 info <nome> -c db/wrangler.identity.jsonc --json`
+  (configuração sem banco: a API procura o nome e devolve o UUID real). Nome e UUID das duas respostas têm de ser os
+  configurados, e nenhum pode ser o da produção (quando o destino não é a produção). Falha de autenticação, API
+  indisponível, banco inexistente ou resposta ilegível: **recusa**, sem repassar o texto do wrangler.
+  Avulsa: `node tools/db.mjs identify --env <amb>`.
+- **Portão.** Todo comando passa por `wrangler()` em `tools/db/cli.mjs`, que só aceita `d1 execute|export|info|migrations
+  apply|time-travel info|restore` com `-c db/wrangler.migrations.jsonc`, o `--env` e o nome do banco conferidos, e
+  nunca `--local`, `--persist-to`, `--preview` ou `--account-id`. O executor real (`tools/db/wrangler.mjs`) ainda
+  recusa qualquer comando que não seja d1 com uma das duas configurações de `db/`, e `d1 create/delete/list`.
+  Nenhuma outra ferramenta do projeto executa o wrangler (um teste varre `tools/` e `tests/`).
+- **Evidências.** Operação remota real grava JSON Lines em `TATAME_EVIDENCE_DIR/evidencias-<data>.jsonl`: horário,
+  execução, operação, ambiente, nome e UUID, versão do wrangler, commit, identidade conferida, cada comando (SQL e
+  arquivos só por tamanho + SHA-256), código de saída e classificação da falha, impressão digital do schema e registro
+  de migrações **antes e depois** (operações de escrita) e o resultado. Nunca: tokens, senhas, códigos, SQL, saída do
+  wrangler ou dados de linhas. Valores de variáveis com nome de credencial (`*TOKEN*`, `*PASSWORD*`, `*SECRET*`, ...)
+  são removidos de tudo que é impresso ou registrado.
 
 Antes de qualquer comando ele mostra: ambiente, nome do banco, ID abreviado, versão do wrangler e operação.
 `--dry-run` mostra o que seria executado sem executar.
@@ -89,6 +114,11 @@ node tools/db.mjs <operação> --env <ambiente> [opções]
 | `baseline-register` | escrita | Registra `000_base.sql` como aplicada **sem executá-la**, só se a comparação for idêntica. Exige `--confirm-baseline=000_base.sql`. |
 | `migrate` | escrita | Verifica antes, anota o bookmark do Time Travel, aplica **só** as pendentes, verifica depois. |
 | `timetravel-info` | leitura | Mostra o bookmark atual do Time Travel. |
+| `identify` | leitura | Confere nome e UUID reais na Cloudflare (3.1). |
+| `sql` | escrita | Só `staging`/`restore-test`, com `--confirm-destination=<nome>`: `--file <arquivo.sql>` ou `--command "<sql>"`. |
+| `timetravel-restore` | escrita | Só `staging`/`restore-test`, com `--confirm-destination`, `--bookmark` ou `--timestamp`, terminal e nome redigitado (seção 8). |
+| `setup-code`, `reset-code` | escrita | Códigos de ativação/recuperação (também por `tools/setup-code.mjs` e `tools/reset-code.mjs`). Só `staging`, `restore-test` ou `local --sqlite`; produção recusada. |
+| `staging-check` | escrita (no app) | Cenários B, C e D por HTTP contra `staging.app_url` (também por `tools/staging-check.mjs`); `docs/validacao-d1.md`, passo 10. |
 | `export` | leitura | Exporta o banco para o armazenamento de backups, com manifesto, e verifica o arquivo. |
 | `verify` | offline | Verifica um backup (seção 7.2). |
 | `anonymize` | offline | Gera cópia pseudonimizada (criptografada) de um backup verificado. |
@@ -99,7 +129,7 @@ node tools/db.mjs <operação> --env <ambiente> [opções]
 | `key-verify-copy` | offline | Confere se a cópia de segurança da chave (`--copy`) é idêntica à configurada. |
 | `temp-clean` | offline | Lista áreas temporárias deixadas por operações interrompidas; `--remove` apaga só as comprovadamente abandonadas (7.6). |
 
-Fora do wrapper: `node tools/db-synthetic.mjs [--sem-002]` (com `--sem-002`, só 000 e 001) grava um backup **sintético** criptografado para o ensaio
+Fora do wrapper (offline): `node tools/db-synthetic.mjs [--sem-002 | --base]` (com `--sem-002`, só 000 e 001; com `--base`, formato 17f1fbd sem `d1_migrations`, para ensaiar a linha de base) grava um backup **sintético** criptografado para o ensaio
 (`docs/validacao-d1.md`).
 
 ## 5. Linha de base da produção (uma vez, antes da primeira migração)
@@ -372,12 +402,15 @@ copiem o temporário.
 - A restauração **sobrescreve o próprio banco** (não cria cópia) e cancela consultas em andamento. Pode ser desfeita
   restaurando o bookmark anterior, que o comando mostra.
 - Limite: 10 restaurações a cada 10 minutos por banco.
-- **Não é automatizado** pelo wrapper. Comandos (manuais, com o wrangler fixado):
+- Pelo wrapper (Etapa 6.5-A), com identidade conferida e registro de evidências:
   ```
-  node node_modules/wrangler/bin/wrangler.js d1 time-travel info <NOME>
-  node node_modules/wrangler/bin/wrangler.js d1 time-travel info <NOME> --timestamp=2026-11-12T10:00:00Z
-  node node_modules/wrangler/bin/wrangler.js d1 time-travel restore <NOME> --bookmark=<BOOKMARK>
+  node tools/db.mjs timetravel-info --env <amb>
+  node tools/db.mjs timetravel-restore --env <staging|restore-test> --confirm-destination=<nome> --bookmark=<BOOKMARK>
+  node tools/db.mjs timetravel-restore --env <staging|restore-test> --confirm-destination=<nome> --timestamp=2026-11-12T10:00:00Z
   ```
+  O `timetravel-restore` anota o bookmark atual (para desfazer), exige terminal e o nome do banco redigitado.
+  **Produção não é aceita**: restaurar a produção por Time Travel exige um procedimento próprio, com autorização
+  específica, ainda não implementado (seção 12).
 
 ## 9. Incidentes
 
@@ -425,6 +458,15 @@ wrangler/D1 que só o ensaio confirma) está em **`docs/validacao-d1.md`**. Resu
   auditoria das ações administrativas (colunas da migração 003, Etapa 6.4-C) está descrita em `docs/auditoria.md`.
 
 ## 12. Limitações conhecidas
+
+- **Etapa 6.5-A, nada executado contra a Cloudflare:** a identidade, o portão, as evidências, `sql`,
+  `timetravel-restore` e `staging-check` foram testados só com a Cloudflare simulada. O formato real do JSON de
+  `d1 info`, do bookmark e das mensagens de autenticação só se confirma no ensaio; se divergir, o wrapper recusa.
+- `reset-code` e `timetravel-restore` **recusam produção**: hoje não há caminho pelo wrapper para gerar código de
+  recuperação nem restaurar por Time Travel na produção (decisão da 6.5-A). Até haver procedimento autorizado, a
+  recuperação de um administrador na produção é por outro administrador, em *Equipe*.
+- Instalações novas (outras academias) precisam virar um ambiente em `db/environments.json` antes de `setup-code`.
+- `--dry-run` com `--env local` não simula: `migrate` local aplica de verdade (anterior à 6.5-A; só arquivo local).
 
 - O modo `--local` do próprio wrangler não funciona nesta máquina (o runtime `workerd` falha ao iniciar; o npm bloqueou
   o script de instalação dele). Não afeta os comandos `--remote`. Os testes usam `node:sqlite` diretamente.

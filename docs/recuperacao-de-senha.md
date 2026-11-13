@@ -10,11 +10,15 @@ Para quem opera o Tatame e para o administrador da academia. Decisão e justific
 ## Procedimento do operador
 
 1. **Confirme a identidade de quem pede.** Ligue para um número que você já conhecia (não o que veio na mensagem do pedido) ou confirme dados que só o administrador saberia (nome da academia, data de cadastro de um aluno). Sem confirmação, não gere código.
-2. Rode, na pasta do projeto, com o Wrangler já autenticado:
+2. Rode, na pasta do projeto, com o Wrangler já autenticado e `TATAME_EVIDENCE_DIR` definido:
    ```
-   node tools/reset-code.mjs --email admin@academia.com --db NOME_DO_BANCO_D1 --remote
+   node tools/reset-code.mjs --email admin@academia.com --env staging
    ```
-   `--local` usa o banco de desenvolvimento. É obrigatório informar um dos dois, para não agir em produção por engano.
+   Desde a Etapa 6.5-A o banco vem **só** de `--env` (`staging`, `restore-test` ou `local --sqlite <arquivo>`), com o
+   nome e o UUID conferidos na Cloudflare antes de qualquer comando e a execução registrada (`docs/operacao-banco.md`,
+   3.1). `--db`, `--remote` e `--local` são recusados.
+   **Produção está bloqueada** nesta ferramenta até existir um procedimento de produção autorizado. Até lá, se a
+   academia tiver outro administrador, ele redefine a senha em *Equipe*.
 3. O script só roda em terminal interativo (com a saída redirecionada para arquivo ou pipe ele recusa, para o código não ficar gravado). Ele mostra o banco, o nome e a função da conta e pede para você **digitar o e-mail da conta**. Só então gera o código.
 4. O código aparece uma única vez, no formato `XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-X`. Só o hash dele vai para o banco; ninguém consegue consultá-lo depois.
 5. Entregue o código ao administrador **por um canal diferente do que pediu a ajuda** (por exemplo, pediu por e-mail, entregue por telefone ou WhatsApp conhecido). Não o escreva em chamados, planilhas ou conversas de grupo.

@@ -21,16 +21,23 @@ Cada passo remoto exige autorização de quem responde pela conta Cloudflare.
 
 1. **Criar a instalação.** Projeto Pages novo com o conteúdo de `web/` e um banco D1 novo, ligado ao projeto pelo binding
    `DB` (no painel). O banco de uma academia nunca é compartilhado com outra.
-2. **Preparar o schema** no banco novo, com o wrangler fixado:
-   `node node_modules/wrangler/bin/wrangler.js d1 execute <banco novo> --remote --file db/schema.sql`
-   e `... --file db/seed_tecnicas.sql`. Depois, cadastrar o banco em `db/environments.json` e registrar a linha de base (`docs/operacao-banco.md`, seções 3 e 5).
+2. **Preparar o schema** no banco novo, sempre pelo wrapper (Etapa 6.5-A: nada de wrangler direto): cadastrar o banco
+   em `db/environments.json` e `db/wrangler.migrations.jsonc` (nome e UUID copiados do painel), conferir com
+   `node tools/db.mjs identify --env <ambiente>`, aplicar o schema com `node tools/db.mjs migrate --env <ambiente>` (banco
+   vazio: aplica 000 a 003 e registra) e as técnicas com
+   `node tools/db.mjs sql --env <ambiente> --confirm-destination=<banco> --file db/seed_tecnicas.sql`
+   (`docs/operacao-banco.md`, seções 3 e 6). Hoje `sql` só aceita `staging` e `restore-test`: um ambiente para outra
+   academia é extensão pendente, com autorização.
 3. **Gerar o código** (o operador, no próprio terminal, interativo):
    ```
-   node tools/setup-code.mjs --db <banco novo> --remote
+   node tools/setup-code.mjs --env <ambiente>
    ```
-   A ferramenta confere que o banco não tem equipe, pede para digitar o nome do banco de novo, grava o hash e a
-   validade (padrão 72 h; `--hours 1..168`) e mostra o código **uma única vez**. Ela recusa o banco de produção listado em
-   `db/environments.json` e qualquer banco que já tenha equipe.
+   Desde a Etapa 6.5-A a ferramenta é a operação `setup-code` do wrapper: o banco vem só de `--env` (cadastrado em
+   `db/environments.json`), com nome e UUID conferidos na Cloudflare e registro de evidências; `--db`/`--remote` são
+   recusados. Hoje aceita `staging`, `restore-test` e `local --sqlite <arquivo>`; um banco de outra academia precisa
+   virar ambiente antes (pendente, com autorização). A ferramenta confere que o banco não tem equipe, pede para digitar
+   o nome do banco de novo, grava o hash e a validade (padrão 72 h; `--hours 1..168`) e mostra o código **uma única
+   vez**. Ela recusa a produção e qualquer banco que já tenha equipe.
 4. **O código fica no banco só como hash.** Nada a configurar no painel, nada em variável de ambiente, nada no Git.
 5. **Entregar o código** ao responsável pela academia por um canal humano (pessoalmente ou por telefone, em canal
    diferente do que pediu a instalação). Não envie por e-mail junto com o endereço do site e não guarde o código.
