@@ -141,3 +141,26 @@ condição em que se para tudo (não tentar "consertar" no meio: anote, pare e r
 - Apagar os backups de ensaio e, se não forem mais usados, a chave de ensaio. Manter o log do ensaio fora do repositório.
 - Registrar no runbook (seção 12) o que foi confirmado e o que mudou em relação às linhas PENDENTE da tabela da seção 0.
 - Só depois disso: linha de base da produção, primeiro backup real e migração (runbook, seções 5 e 10), cada um com autorização própria.
+
+## 4. Checkpoint da Etapa 6.5-B (2026-11-16): ensaio encerrado por decisão do responsável
+
+O ensaio foi interrompido para priorizar a entrega da aplicação. Todas as proteções e ferramentas continuam ativas.
+
+| Bloco | Situação | Evidência |
+|---|---|---|
+| A: IDs reais em `db/environments.json` e `db/wrangler.migrations.jsonc` | concluído | commit `e7b6041` |
+| B: `identify` em staging e restore-test | concluído | execuções `730555db` e `95fc6b89` |
+| C: passos 3 a 8 (sintético, export, criptografia, adulteração, restauração, `check`) | concluído | restore-test OK, 356 campos, 0 divergências; `check` OK (execução `39d80d23`) |
+| D: atomicidade de `sql --file` | **não executado** (plano aprovado, sem autorização) | — |
+| E: linha de base, migrações e gatilhos em ambiente descartável | **não executado** | — |
+| F: Time Travel no restore-test | **não executado** | — |
+| G: encerramento (`d1 list`, conferência do passo 11) | **não executado** | — |
+| Passo 10: projeto Pages de staging e `staging-check` | fora do escopo | — |
+
+- **Constatado no D1 real:** `PRAGMA integrity_check` é recusado (erro 7500). `check` e `migrate` usam `quick_check` no remoto (commit `efe6b85`); a verificação completa é feita na cópia exportada.
+- **Evidências:** `C:\TatameEvidence\evidencias-2026-11-13.jsonl`, mantido sem edição. Ele contém 86 linhas (43 execuções) com `env: "local"`, gravadas por testes locais que herdaram `TATAME_EVIDENCE_DIR`; não são operações remotas. A herança pelos testes ainda não foi corrigida.
+- **Produção (`tatame-db`, `3b3cbeec…`):** nunca acessada no ensaio. As migrações 001 a 003 **não** foram aplicadas nela.
+- **Riscos que continuam abertos** por causa dos blocos não executados:
+  - a atomicidade de arquivos SQL no D1 não foi confirmada; depois de qualquer falha, o procedimento é `--replace` e reimportação;
+  - a sequência linha de base → migrações não foi ensaiada no D1 real; no primeiro uso, o `migrate` anota antes o bookmark do Time Travel.
+- **Git:** `etapa-0-seguranca` em `efe6b85`, publicada no GitHub; `main` em `8bcea11`. A Agenda V1 segue em `agenda-v1`, num worktree separado, a partir de `5508ac3`, ainda sem integração.
